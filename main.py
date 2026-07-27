@@ -6,14 +6,36 @@ import threading
 from flask import Flask
 from telebot import types
 
-# Keep-Alive Web Server for Render
+# ==================== KEEP-ALIVE & 1-MIN SELF-PING ENGINE ====================
 app = Flask('')
+
 @app.route('/')
-def home(): return "Bot is Alive!"
-threading.Thread(target=lambda: app.run(host='0.0.0.0', port=8080)).start()
+def home():
+    return "Bot is Alive 24/7!"
+
+def run_flask():
+    try:
+        app.run(host='0.0.0.0', port=8080)
+    except Exception as e:
+        print(f"Flask Server Error: {e}")
+
+# Every 1-Minute (60 Seconds) Self-Ping to prevent Render Sleep Mode
+def self_ping():
+    time.sleep(10)
+    url = "https://my-otp-bot-d7jk.onrender.com"  # আপনার Render ওয়েবসাইট লিংক
+    while True:
+        try:
+            requests.get(url, timeout=10)
+            print("🚀 1-Min Self-ping successful! Render server kept awake.")
+        except Exception as e:
+            print(f"Ping warning: {e}")
+        time.sleep(60) # প্রতি ১ মিনিটে রেন্ডার সার্ভারে পিং পাঠাবে
+
+threading.Thread(target=run_flask, daemon=True).start()
+threading.Thread(target=self_ping, daemon=True).start()
 
 # ==================== CONFIGURATION ====================
-BOT_TOKEN = "8842802759:AAHmWCdirv1RsZdineS-TpL3Oy6BmA648uQ" # আপনার নতুন সচল টোকেন
+BOT_TOKEN = "8842802759:AAHmWCdirv1RsZdineS-Tpl3Oy6BmA648uQ" # আপনার বটের টোকেন
 ADMIN_ID = 8125384914                                       # আপনার Admin ID
 DB_NAME = "fresh_master_shop.db"
 # =======================================================
@@ -160,7 +182,7 @@ def numbers_cmd(message):
     conn.close()
 
     if not services:
-        bot.send_message(message.chat.id, "⚠️ বর্তমানে কোনো সার্ভিস বা কান্ট্রি এভেলেবল নেই। অ্যাডমিনকে অ্যাড করতে বলুন।")
+        bot.send_message(message.chat.id, "⚠️ বর্তমানে কোনো সার্ভিস বা কান্ট্রি এভেলেবল নেই। অ্যাডমিন প্যানেল থেকে অ্যাড করুন।")
         return
 
     markup = types.InlineKeyboardMarkup(row_width=2)
@@ -232,7 +254,7 @@ def buy_number_click(call):
 
 @bot.message_handler(func=lambda msg: msg.text == "🚥 LIVE TRAFFIC")
 def live_traffic_cmd(message):
-    bot.send_message(message.chat.id, "📊 <b>LIVE TRAFFIC</b>\n━━━━━━━━━━━━━━━━━━\n🌐 <b>API Status:</b> Active\nOTP Monitoring Running...")
+    bot.send_message(message.chat.id, "📊 <b>LIVE TRAFFIC</b>\n━━━━━━━━━━━━━━━━━━\n🌐 <b>API Status:</b> Active\nOTP Monitoring Running 24/7...")
 
 # ----------------- 🛍️ WEB SHOP SYSTEM -----------------
 @bot.message_handler(func=lambda msg: msg.text == "🛍️ Web Shop")
@@ -425,7 +447,7 @@ def profile_cmd(message):
     )
     bot.send_message(message.chat.id, text)
 
-# ----------------- 💳 DEPOSIT SYSTEM (Direct TrxID Prompt) -----------------
+# ----------------- 💳 DEPOSIT SYSTEM -----------------
 @bot.message_handler(func=lambda msg: msg.text == "💳 Deposit")
 def deposit_cmd(message):
     text = "💳 <b>Deposit</b>\n\nSelect payment method:"
@@ -535,7 +557,7 @@ def process_dep_trxid(message):
         dep_id = cursor.lastrowid
         conn.close()
         
-        bot.send_message(message.chat.id, "✅ আপনার ডিপোজিট রিকুয়েস্ট সাবমিট হয়েছে। এডমিন ভেরিফাই করে এপ্রুভ করে দেবে।")
+        bot.send_message(message.chat.id, "✅ আপনার ডিপোজিট রিকুয়েস্ট সফলভাবে সাবমিট হয়েছে। এডমিন ভেরিফাই করে এপ্রুভ করে দেবে।")
         
         # Send Notification to Admin
         admin_text = (
@@ -598,12 +620,12 @@ def admin_panel_cmd(message):
         types.InlineKeyboardButton("📥 Upload OTP Numbers", callback_data="adm_upload_otp")
     )
     markup.add(
-        types.InlineKeyboardButton("🛍️ Add Shop Product", callback_data="adm_add_shop_stock"),
+        types.InlineKeyboardButton("🛍️ Add Shop Stock", callback_data="adm_add_shop_stock"),
         types.InlineKeyboardButton("👤 Edit User Balance", callback_data="adm_edit_balance")
     )
     markup.add(
         types.InlineKeyboardButton("📢 Broadcast Message", callback_data="adm_broadcast"),
-        types.InlineKeyboardButton("🗑️ Clear All Stock Data", callback_data="adm_clear_stock")
+        types.InlineKeyboardButton("🗑️ Reset & Clear All Stock", callback_data="adm_clear_stock")
     )
     bot.send_message(message.chat.id, text, reply_markup=markup)
 
