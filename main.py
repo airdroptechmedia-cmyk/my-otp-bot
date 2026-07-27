@@ -19,17 +19,16 @@ def run_flask():
     except Exception as e:
         print(f"Flask Server Error: {e}")
 
-# Every 1-Minute (60 Seconds) Self-Ping to prevent Render Sleep Mode
 def self_ping():
     time.sleep(10)
     url = "https://my-otp-bot-d7jk.onrender.com"  # আপনার Render ওয়েবসাইট লিংক
     while True:
         try:
             requests.get(url, timeout=10)
-            print("🚀 1-Min Self-ping successful! Render server kept awake.")
+            print("🚀 1-Min Self-ping successful! Render kept awake.")
         except Exception as e:
-            print(f"Ping warning: {e}")
-        time.sleep(60) # প্রতি ১ মিনিটে রেন্ডার সার্ভারে পিং পাঠাবে
+            pass
+        time.sleep(60)
 
 threading.Thread(target=run_flask, daemon=True).start()
 threading.Thread(target=self_ping, daemon=True).start()
@@ -42,7 +41,6 @@ DB_NAME = "fresh_master_shop.db"
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 
-user_state = {}
 admin_state = {}
 
 # ----------------- DATABASE INITIALIZATION -----------------
@@ -105,7 +103,7 @@ def init_db():
         value TEXT
     )''')
     
-    # Default Editable Settings
+    # Default Settings
     defaults = {
         'bkash_num': '01833878871',
         'nagad_num': '01833878871',
@@ -193,6 +191,7 @@ def numbers_cmd(message):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("usr_srv_"))
 def user_service_click(call):
+    bot.answer_callback_query(call.id)
     service_name = call.data.split("_")[2]
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -209,6 +208,7 @@ def user_service_click(call):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("buy_"))
 def buy_number_click(call):
+    bot.answer_callback_query(call.id)
     _, service, country_code, price = call.data.split("_")
     price = float(price)
     user_id = call.from_user.id
@@ -235,7 +235,7 @@ def buy_number_click(call):
     cursor.execute("UPDATE numbers SET status='assigned' WHERE id=?", (num_id,))
     cursor.execute("UPDATE users SET balance = balance - ?, otp_count = otp_count + 1 WHERE user_id=?", (price, user_id))
     
-    # 10 OTP Referral Condition Check
+    # 10 OTP Referral Condition
     cursor.execute("SELECT referred_by, otp_count FROM users WHERE user_id=?", (user_id,))
     u_row = cursor.fetchone()
     if u_row and u_row[0] and u_row[1] == 10:
@@ -270,6 +270,7 @@ def buy_products_cmd(message):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("cat_"))
 def category_select_cb(call):
+    bot.answer_callback_query(call.id)
     category = call.data.split("_")[1]
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -294,6 +295,7 @@ def category_select_cb(call):
 
 @bot.callback_query_handler(func=lambda call: call.data == "back_to_shop")
 def back_to_shop_cb(call):
+    bot.answer_callback_query(call.id)
     text = "🛍️ <b>Buy Products</b>\n\nSelect a category:"
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
@@ -305,6 +307,7 @@ def back_to_shop_cb(call):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("selectprod_"))
 def select_prod_cb(call):
+    bot.answer_callback_query(call.id)
     p_id = call.data.split("_")[1]
     user_id = call.from_user.id
     
@@ -318,8 +321,6 @@ def select_prod_cb(call):
         return
         
     p_name, p_price, p_stock = prod
-    user_state[user_id] = {'p_id': p_id, 'p_name': p_name, 'p_price': p_price, 'p_stock': p_stock}
-    
     text = (
         f"📧 <b>{p_name}</b>\n"
         f"⚡ <b>{p_price:.2f} BDT / piece</b>\n"
@@ -330,9 +331,9 @@ def select_prod_cb(call):
     markup.add(types.InlineKeyboardButton("❌ Cancel", callback_data="cancel_action"))
     
     msg = bot.send_message(call.message.chat.id, text, reply_markup=markup)
-    bot.register_next_step_handler(msg, process_product_quantity)
+    bot.register_next_step_handler(msg, lambda m: process_product_quantity(m, p_id, p_name, p_price, p_stock))
 
-def process_product_quantity(message):
+def process_product_quantity(message, p_id, p_name, p_price, p_stock):
     user_id = message.from_user.id
     if message.text == "❌ Cancel":
         bot.send_message(message.chat.id, "অর্ডার বাতিল করা হয়েছে।")
@@ -340,11 +341,6 @@ def process_product_quantity(message):
 
     try:
         qty = int(message.text.strip())
-        st = user_state.get(user_id, {})
-        p_price = st.get('p_price', 0.70)
-        p_name = st.get('p_name', 'Item')
-        p_stock = st.get('p_stock', 100)
-        
         if qty <= 0 or qty > p_stock:
             bot.send_message(message.chat.id, f"❌ পর্যাপ্ত স্টক নেই! সর্বোচ্চ {p_stock} টি নিতে পারবেন।")
             return
@@ -358,10 +354,6 @@ def process_product_quantity(message):
         bal = cursor.fetchone()[0]
         conn.close()
         
-        st['qty'] = qty
-        st['total_bdt'] = total_bdt
-        user_state[user_id] = st
-        
         text = (
             f"📬 <b>Order Summary</b>\n\n"
             f"⚡ <b>Category :</b> {p_name}\n"
@@ -371,22 +363,20 @@ def process_product_quantity(message):
         )
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(
-            types.InlineKeyboardButton("✅ Confirm Order", callback_data="confirm_order"),
+            types.InlineKeyboardButton("✅ Confirm Order", callback_data=f"confbuy_{p_id}_{qty}_{total_bdt}"),
             types.InlineKeyboardButton("❌ Cancel", callback_data="cancel_action")
         )
         bot.send_message(message.chat.id, text, reply_markup=markup)
     except:
         bot.send_message(message.chat.id, "❌ সঠিক সংখ্যা টাইপ করুন।")
 
-@bot.callback_query_handler(func=lambda call: call.data == "confirm_order")
+@bot.callback_query_handler(func=lambda call: call.data.startswith("confbuy_"))
 def confirm_order_cb(call):
+    bot.answer_callback_query(call.id)
+    _, p_id, qty, total_bdt = call.data.split("_")
+    qty = int(qty)
+    total_bdt = float(total_bdt)
     user_id = call.from_user.id
-    st = user_state.get(user_id, {})
-    
-    p_id = st.get('p_id')
-    qty = st.get('qty', 1)
-    total_bdt = st.get('total_bdt', 0.70)
-    p_name = st.get('p_name', 'Item')
     
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -398,8 +388,9 @@ def confirm_order_cb(call):
         conn.close()
         return
         
-    cursor.execute("SELECT data_content FROM products WHERE id=?", (p_id,))
-    content = cursor.fetchone()[0]
+    cursor.execute("SELECT name, data_content FROM products WHERE id=?", (p_id,))
+    prod_info = cursor.fetchone()
+    p_name, content = prod_info[0], prod_info[1]
     
     cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id=?", (total_bdt, user_id))
     cursor.execute("UPDATE products SET stock = stock - ? WHERE id=?", (qty, p_id))
@@ -447,7 +438,7 @@ def profile_cmd(message):
     )
     bot.send_message(message.chat.id, text)
 
-# ----------------- 💳 DEPOSIT SYSTEM -----------------
+# ----------------- 💳 DEPOSIT SYSTEM (STATELESS FAIL-PROOF) -----------------
 @bot.message_handler(func=lambda msg: msg.text == "💳 Deposit")
 def deposit_cmd(message):
     text = "💳 <b>Deposit</b>\n\nSelect payment method:"
@@ -466,23 +457,19 @@ def deposit_cmd(message):
 def dep_method_cb(call):
     bot.answer_callback_query(call.id)
     method = call.data.split("_")[1]
-    user_id = call.from_user.id
     
     if method in ["bkash", "nagad", "binance"]:
         min_dep = get_setting('min_deposit') or '20.0'
         num = get_setting(f'{method}_num') if method != 'binance' else get_setting('binance_uid')
-        
-        user_state[user_id] = {'method': method, 'num': num}
         
         text = f"🌸 <b>{method.upper()}</b>\n\nEnter deposit amount in BDT:\n<i>(Minimum: {min_dep} BDT)</i>"
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("❌ Cancel", callback_data="cancel_action"))
         
         msg = bot.send_message(call.message.chat.id, text, reply_markup=markup)
-        bot.register_next_step_handler(msg, process_dep_amount)
+        bot.register_next_step_handler(msg, lambda m: process_dep_amount(m, method, num))
 
-def process_dep_amount(message):
-    user_id = message.from_user.id
+def process_dep_amount(message, method, num):
     if message.text == "❌ Cancel":
         bot.send_message(message.chat.id, "ডিপোজিট বাতিল করা হয়েছে।")
         return
@@ -495,15 +482,8 @@ def process_dep_amount(message):
             bot.send_message(message.chat.id, f"❌ সর্বনিম্ন ডিপোজিট {min_dep} BDT।")
             return
             
-        st = user_state.get(user_id, {})
-        st['amount'] = amt
-        user_state[user_id] = st
-        
-        method_name = st['method'].upper()
-        num = st['num']
-        
         text = (
-            f"💳 <b>{method_name}</b>\n\n"
+            f"💳 <b>{method.upper()}</b>\n\n"
             f"Send <b>{amt:.2f} BDT</b> to:\n"
             f"<code>{num}</code>\n\n"
             f"<i>Tap above to copy number/UID</i>\n\n"
@@ -511,24 +491,22 @@ def process_dep_amount(message):
         )
         markup = types.InlineKeyboardMarkup(row_width=1)
         markup.add(
-            types.InlineKeyboardButton("✅ Paid", callback_data="dep_paid_clicked"),
+            types.InlineKeyboardButton("✅ Paid", callback_data=f"paid_{method}_{amt}"),
             types.InlineKeyboardButton("❌ Cancel", callback_data="cancel_action")
         )
         bot.send_message(message.chat.id, text, reply_markup=markup)
     except:
         bot.send_message(message.chat.id, "❌ সঠিক সংখ্যা লিখুন।")
 
-@bot.callback_query_handler(func=lambda call: call.data == "dep_paid_clicked")
+@bot.callback_query_handler(func=lambda call: call.data.startswith("paid_"))
 def dep_paid_cb(call):
     bot.answer_callback_query(call.id)
-    user_id = call.from_user.id
-    st = user_state.get(user_id, {})
-    amt = st.get('amount', 20.0)
-    method = st.get('method', 'bKash').upper()
+    _, method, amt = call.data.split("_")
+    amt = float(amt)
     
     text = (
         f"🚩 <b>Enter Transaction ID (TrxID)</b>\n\n"
-        f"Amount: {amt:.2f} BDT via {method}\n\n"
+        f"Amount: {amt:.2f} BDT via {method.upper()}\n\n"
         f"Send the TrxID from your payment SMS below:\n"
         f"<i>(উদাহরণ: DF27TNVV17)</i>"
     )
@@ -536,15 +514,11 @@ def dep_paid_cb(call):
     markup.add(types.InlineKeyboardButton("❌ Cancel", callback_data="cancel_action"))
     
     msg = bot.send_message(call.message.chat.id, text, reply_markup=markup)
-    bot.register_next_step_handler(msg, process_dep_trxid)
+    bot.register_next_step_handler(msg, lambda m: process_dep_trxid(m, method, amt))
 
-def process_dep_trxid(message):
+def process_dep_trxid(message, method, amt):
     user_id = message.from_user.id
     trx_id = message.text.strip().upper()
-    
-    st = user_state.get(user_id, {})
-    amt = st.get('amount', 20.0)
-    method = st.get('method', 'bKash').upper()
     
     dep_bonus_pct = float(get_setting('deposit_bonus') or 5.0)
     final_amt = amt + (amt * (dep_bonus_pct / 100.0))
@@ -552,19 +526,19 @@ def process_dep_trxid(message):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     try:
-        cursor.execute("INSERT INTO deposits (user_id, amount, method, trx_id) VALUES (?, ?, ?, ?)", (user_id, final_amt, method, trx_id))
+        cursor.execute("INSERT INTO deposits (user_id, amount, method, trx_id) VALUES (?, ?, ?, ?)", (user_id, final_amt, method.upper(), trx_id))
         conn.commit()
         dep_id = cursor.lastrowid
         conn.close()
         
         bot.send_message(message.chat.id, "✅ আপনার ডিপোজিট রিকুয়েস্ট সফলভাবে সাবমিট হয়েছে। এডমিন ভেরিফাই করে এপ্রুভ করে দেবে।")
         
-        # Send Notification to Admin
+        # Alert Admin
         admin_text = (
             f"📥 <b>NEW DEPOSIT REQUEST!</b>\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"👤 <b>User ID:</b> <code>{user_id}</code>\n"
-            f"💳 <b>Method:</b> {method}\n"
+            f"💳 <b>Method:</b> {method.upper()}\n"
             f"💵 <b>Amount:</b> {amt} BDT (+{dep_bonus_pct}% Bonus = <b>{final_amt:.2f} BDT</b>)\n"
             f"🏷️ <b>TrxID:</b> <code>{trx_id}</code>"
         )
