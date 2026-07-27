@@ -35,7 +35,7 @@ threading.Thread(target=run_flask, daemon=True).start()
 threading.Thread(target=self_ping, daemon=True).start()
 
 # ==================== CONFIGURATION ====================
-BOT_TOKEN = "8842802759:AAHmWCdirv1RsZdineS-Tpl3Oy6BmA648uQ" # আপনার বটের টোকেন
+BOT_TOKEN = "8842802759:AAFTzG_yyzHiirBiW2Canl2l0t_sG2HxKt8" # আপনার বটের টোকেন
 ADMIN_ID = 8125384914                                       # আপনার Admin ID
 DB_NAME = "fresh_master_shop.db"
 # =======================================================
