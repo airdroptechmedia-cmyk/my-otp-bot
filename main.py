@@ -3,6 +3,9 @@ import telebot
 import time
 import requests
 import threading
+import io
+import datetime
+import openpyxl
 from flask import Flask
 from telebot import types
 
@@ -32,6 +35,25 @@ def self_ping():
 
 threading.Thread(target=run_flask, daemon=True).start()
 threading.Thread(target=self_ping, daemon=True).start()
+
+# Helper function to generate Excel File (.xlsx)
+def create_excel_document(product_name, lines):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Accounts"
+    
+    for idx, line in enumerate(lines, start=1):
+        ws.cell(row=idx, column=1, value=line)
+        
+    stream = io.BytesIO()
+    wb.save(stream)
+    stream.seek(0)
+    
+    now_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    clean_name = product_name.replace(" ", "_")
+    file_name = f"{clean_name}_{now_str}.xlsx"
+    stream.name = file_name
+    return stream
 
 # ==================== CONFIGURATION ====================
 BOT_TOKEN = "8842802759:AAFTzG_yyzHiirBiW2Canl2l0t_sG2HxKt8" # আপনার বটের টোকেন
@@ -172,7 +194,7 @@ def start_cmd(message):
         conn.commit()
     conn.close()
 
-    bot.send_message(message.chat.id, "👋 <b>OTP Receiver Pro Bot</b>-এ আপনাকে স্বাগতম!", reply_markup=main_reply_keyboard(user_id))
+    bot.send_message(message.chat.id, "👋 <b>Will be Earn Shop</b>-এ আপনাকে স্বাগতম!", reply_markup=main_reply_keyboard(user_id))
 
 # ----------------- 📱 NUMBER'S BOT SYSTEM -----------------
 @bot.message_handler(func=lambda msg: msg.text == "📱 NUMBER'S")
@@ -260,7 +282,7 @@ def buy_number_click(call):
 def live_traffic_cmd(message):
     bot.send_message(message.chat.id, "📊 <b>LIVE TRAFFIC</b>\n━━━━━━━━━━━━━━━━━━\n🌐 <b>API Status:</b> Active\nOTP Monitoring Running 24/7...")
 
-# ----------------- 🛍️ WEB SHOP INVENTORY SYSTEM -----------------
+# ----------------- 🛍️ WEB SHOP INVENTORY & EXCEL DELIVERY SYSTEM -----------------
 @bot.message_handler(func=lambda msg: msg.text == "🛍️ Web Shop")
 def buy_products_cmd(message):
     text = "🛍️ <b>Buy Products</b>\n\nSelect a category:"
@@ -287,14 +309,14 @@ def category_select_cb(call):
         conn.close()
         return
 
-    text = f"<b>{category} — Select Category / Plan:</b>"
+    text = f"<b>{category} — Select Category:</b>"
     markup = types.InlineKeyboardMarkup(row_width=1)
     
     for p in products:
         p_id, p_name, p_price = p
         cursor.execute("SELECT COUNT(*) FROM item_stock WHERE product_id=? AND status='available'", (p_id,))
         p_stock = cursor.fetchone()[0]
-        btn_text = f"{p_name} · {p_price:.2f} BDT · {p_stock} in stock"
+        btn_text = f"📧 {p_name} · {p_price:.2f} BDT · {p_stock} in stock"
         markup.add(types.InlineKeyboardButton(btn_text, callback_data=f"selectprod_{p_id}"))
         
     markup.add(types.InlineKeyboardButton("‹ Back", callback_data="back_to_shop"))
@@ -333,7 +355,7 @@ def select_prod_cb(call):
     p_stock = cursor.fetchone()[0]
     conn.close()
     
-    set_setting(f"usr_buying_{user_id}", f"{p_id}:{p_name}:{p_price}:{p_stock}")
+    set_setting(f"usr_buying_{user_id}", str(p_id))
     set_setting(f"usr_step_{user_id}", "await_qty")
     
     text = (
@@ -346,22 +368,25 @@ def select_prod_cb(call):
     markup.add(types.InlineKeyboardButton("❌ Cancel", callback_data="cancel_action"))
     bot.send_message(call.message.chat.id, text, reply_markup=markup)
 
-@bot.callback_query_handler(func=lambda call: call.data == "confirm_order")
+# Stateless Instant Confirmation & Excel File Delivery Callback
+@bot.callback_query_handler(func=lambda call: call.data.startswith("cfmbuy_"))
 def confirm_order_cb(call):
     bot.answer_callback_query(call.id)
     user_id = call.from_user.id
     
-    p_id = get_setting(f"ord_pid_{user_id}")
-    qty = int(get_setting(f"ord_qty_{user_id}") or 1)
-    total_bdt = float(get_setting(f"ord_tot_{user_id}") or 0.0)
+    parts = call.data.split("_")
+    p_id = int(parts[1])
+    qty = int(parts[2])
+    total_bdt = float(parts[3])
     
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
-    bal = cursor.fetchone()[0]
+    user_row = cursor.fetchone()
+    bal = user_row[0] if user_row else 0.0
     
     if bal < total_bdt:
-        bot.answer_callback_query(call.id, "❌ আপনার পর্যাপ্ত ব্যালেন্স নেই! Deposit করুন।", show_alert=True)
+        bot.send_message(call.message.chat.id, f"❌ <b>অর্ডার সম্পূর্ণ করা সম্ভব হয়নি!</b>\n\nআপনার ব্যালেন্স: <b>{bal:.2f} BDT</b>\nপ্রয়োজন: <b>{total_bdt:.2f} BDT</b>\n\nঅনুগ্রহ করে 💳 Deposit সার্ভিস থেকে রিচার্জ করুন।")
         conn.close()
         return
         
@@ -386,16 +411,18 @@ def confirm_order_cb(call):
     conn.commit()
     conn.close()
     
-    full_content = "\n".join(delivered_lines)
+    # Generate Excel (.xlsx) file
+    excel_file = create_excel_document(p_name, delivered_lines)
+    
     delivery_text = (
-        f"✅ <b>Mail / Product Delivered!</b>\n\n"
+        f"✅ <b>Mail Delivered!</b>\n\n"
         f"📧 <b>{qty}x {p_name}</b>\n"
         f"💰 <b>Paid : {total_bdt:.2f} BDT</b>\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
-        f"📱 <b>Details below ↓</b>\n\n"
-        f"<code>{full_content}</code>"
+        f"📱 <b>File below ↓</b>"
     )
     bot.edit_message_text(delivery_text, call.message.chat.id, call.message.message_id)
+    bot.send_document(call.message.chat.id, excel_file)
 
 # ----------------- 👤 PROFILE & REFERRAL SYSTEM -----------------
 @bot.message_handler(func=lambda msg: msg.text == "👤 My Profile")
@@ -563,7 +590,7 @@ def admin_cb_handler(call):
         cat = data.split("_")[1]
         set_setting(f"adm_add_cat_{user_id}", cat)
         set_setting(f"adm_step_{user_id}", "add_prod_info")
-        bot.send_message(call.message.chat.id, f"<b>{cat} Stock:</b>\n\nপ্রোডাক্টের নাম এবং প্রতি পিসের দাম লিখুন:\n\n<code>প্রোডাক্টের নাম, দাম</code>\n\nউদাহরণ:\n<code>Fr Outlook, 0.80</code>\nঅথবা\n<code>PIA Proxy, 12.0</code>")
+        bot.send_message(call.message.chat.id, f"<b>{cat} Stock:</b>\n\nপ্রোডাক্টের নাম এবং প্রতি পিসের দাম লিখুন:\n\n<code>প্রোডাক্টের নাম, দাম</code>\n\nউদাহরণ:\n<code>Fr Outlook, 0.80</code>\nঅথবা\n<code>Hotmail Trusted, 0.70</code>")
 
     elif data == "adm_view_pending_dep":
         conn = sqlite3.connect(DB_NAME)
@@ -677,7 +704,7 @@ def global_message_handler(message):
     user_id = message.from_user.id
     txt = message.text.strip() if message.text else ""
     
-    # Check Admin Steps
+    # Admin State Steps
     if user_id == ADMIN_ID:
         adm_step = get_setting(f"adm_step_{user_id}")
         if adm_step:
@@ -712,9 +739,9 @@ def global_message_handler(message):
                     set_setting(f"active_pname_{user_id}", p_name)
                     set_setting(f"adm_step_{user_id}", "await_stock_items")
                     
-                    bot.send_message(message.chat.id, f"✅ <b>{p_name} ({p_price:.2f} BDT)</b> প্রোডাক্ট সিলেক্ট হয়েছে!\n\nএখন এই প্রোডাক্টের মেইল/অ্যাকাউন্ট/প্রক্সি লিংকগুলোর তালিকা টেক্সট বা ফাইল হিসেবে টাইপ করে বা আপলোড করে পাঠান:\n<i>(প্রতি লাইনে ১টি করে ডাটা রাখবেন)</i>")
+                    bot.send_message(message.chat.id, f"✅ <b>{p_name} ({p_price:.2f} BDT)</b> প্রোডাক্ট সিলেক্ট হয়েছে!\n\nএখন এই প্রোডাক্টের মেইল/অ্যাকাউন্ট/প্রক্সি লিংকগুলোর তালিকা টেক্সট মেসেজ হিসেবে টাইপ করে বা কপি-পেস্ট করে পাঠান:\n<i>(প্রতি লাইনে ১টি করে ডাটা রাখবেন)</i>")
                 except:
-                    bot.send_message(message.chat.id, "❌ ফরম্যাট ভুল হয়েছে। লিখুন: `প্রোডাক্টের নাম, দাম`")
+                    bot.send_message(message.chat.id, "❌ ফরম্যাট ভুল হয়েছে। লিখুন: `প্রোডাক্টের নাম, দাম` (যেমন: `Fr Outlook, 0.80`)")
                 return
             elif adm_step == "await_stock_items":
                 p_id = get_setting(f"active_pid_{user_id}")
@@ -782,27 +809,29 @@ def global_message_handler(message):
     if usr_step == "await_qty":
         try:
             qty = int(txt)
-            raw = get_setting(f"usr_buying_{user_id}")
-            p_id, p_name, p_price, p_stock = raw.split(":")
-            p_price = float(p_price)
-            p_stock = int(p_stock)
+            p_id = get_setting(f"usr_buying_{user_id}")
+            
+            conn = sqlite3.connect(DB_NAME)
+            cursor = conn.cursor()
+            cursor.execute("SELECT name, price FROM products WHERE id=?", (p_id,))
+            prod = cursor.fetchone()
+            p_name, p_price = prod[0], prod[1]
+            
+            cursor.execute("SELECT COUNT(*) FROM item_stock WHERE product_id=? AND status='available'", (p_id,))
+            p_stock = cursor.fetchone()[0]
             
             if qty <= 0 or qty > p_stock:
                 bot.send_message(message.chat.id, f"❌ পর্যাপ্ত স্টক নেই! সর্বোচ্চ {p_stock} টি নিতে পারবেন।")
+                conn.close()
                 return
                 
             total_bdt = qty * p_price
             total_usdt = total_bdt / 125.0
             
-            conn = sqlite3.connect(DB_NAME)
-            cursor = conn.cursor()
             cursor.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
             bal = cursor.fetchone()[0]
             conn.close()
             
-            set_setting(f"ord_pid_{user_id}", p_id)
-            set_setting(f"ord_qty_{user_id}", str(qty))
-            set_setting(f"ord_tot_{user_id}", str(total_bdt))
             set_setting(f"usr_step_{user_id}", "")
             
             text = (
@@ -814,11 +843,11 @@ def global_message_handler(message):
             )
             markup = types.InlineKeyboardMarkup(row_width=2)
             markup.add(
-                types.InlineKeyboardButton("✅ Confirm Order", callback_data="confirm_order"),
+                types.InlineKeyboardButton("✅ Confirm Order", callback_data=f"cfmbuy_{p_id}_{qty}_{total_bdt:.2f}"),
                 types.InlineKeyboardButton("❌ Cancel", callback_data="cancel_action")
             )
             bot.send_message(message.chat.id, text, reply_markup=markup)
-        except:
+        except Exception as e:
             bot.send_message(message.chat.id, "❌ সঠিক সংখ্যা টাইপ করুন।")
         return
 
@@ -868,8 +897,9 @@ def global_message_handler(message):
             conn.close()
             
             set_setting(f"usr_step_{user_id}", "")
-            bot.send_message(message.chat.id, "✅ আপনার ডিপোজিট রিকুয়েস্ট সাবমিট হয়েছে। এডমিন চেক করে এপ্রুভ করে দেবে।")
+            bot.send_message(message.chat.id, "✅ আপনার ডিপোজিট রিকুয়েস্ট সফলভাবে সাবমিট হয়েছে। এডমিন ভেরিফাই করে এপ্রুভ করে দেবে।")
             
+            # Send Notification to Admin
             admin_text = (
                 f"📥 <b>NEW DEPOSIT REQUEST!</b>\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
