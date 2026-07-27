@@ -75,14 +75,20 @@ def init_db():
         price REAL
     )''')
     
-    # Web Shop Products Table
+    # Products Table
     cursor.execute('''CREATE TABLE IF NOT EXISTS products (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         category TEXT,
         name TEXT,
-        price REAL,
-        stock INTEGER DEFAULT 100,
-        data_content TEXT DEFAULT ''
+        price REAL
+    )''')
+    
+    # Item Level Inventory Stock Table
+    cursor.execute('''CREATE TABLE IF NOT EXISTS item_stock (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        product_id INTEGER,
+        content TEXT,
+        status TEXT DEFAULT 'available'
     )''')
     
     # Deposits Table
@@ -95,7 +101,7 @@ def init_db():
         status TEXT DEFAULT 'pending'
     )''')
     
-    # Settings Table
+    # System Settings Table
     cursor.execute('''CREATE TABLE IF NOT EXISTS settings (
         key TEXT PRIMARY KEY,
         value TEXT
@@ -254,7 +260,7 @@ def buy_number_click(call):
 def live_traffic_cmd(message):
     bot.send_message(message.chat.id, "📊 <b>LIVE TRAFFIC</b>\n━━━━━━━━━━━━━━━━━━\n🌐 <b>API Status:</b> Active\nOTP Monitoring Running 24/7...")
 
-# ----------------- 🛍️ WEB SHOP SYSTEM -----------------
+# ----------------- 🛍️ WEB SHOP INVENTORY SYSTEM -----------------
 @bot.message_handler(func=lambda msg: msg.text == "🛍️ Web Shop")
 def buy_products_cmd(message):
     text = "🛍️ <b>Buy Products</b>\n\nSelect a category:"
@@ -270,25 +276,29 @@ def buy_products_cmd(message):
 def category_select_cb(call):
     bot.answer_callback_query(call.id)
     category = call.data.split("_")[1]
+    
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute("SELECT id, name, price, stock FROM products WHERE category=?", (category,))
+    cursor.execute("SELECT id, name, price FROM products WHERE category=?", (category,))
     products = cursor.fetchall()
-    conn.close()
-
+    
     if not products:
         bot.answer_callback_query(call.id, "⚠️ এই ক্যাটাগরিতে বর্তমানে কোনো প্রডাক্ট নেই!", show_alert=True)
+        conn.close()
         return
 
     text = f"<b>{category} — Select Category / Plan:</b>"
     markup = types.InlineKeyboardMarkup(row_width=1)
     
     for p in products:
-        p_id, p_name, p_price, p_stock = p
+        p_id, p_name, p_price = p
+        cursor.execute("SELECT COUNT(*) FROM item_stock WHERE product_id=? AND status='available'", (p_id,))
+        p_stock = cursor.fetchone()[0]
         btn_text = f"{p_name} · {p_price:.2f} BDT · {p_stock} in stock"
         markup.add(types.InlineKeyboardButton(btn_text, callback_data=f"selectprod_{p_id}"))
         
     markup.add(types.InlineKeyboardButton("‹ Back", callback_data="back_to_shop"))
+    conn.close()
     bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data == "back_to_shop")
@@ -311,14 +321,18 @@ def select_prod_cb(call):
     
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute("SELECT name, price, stock FROM products WHERE id=?", (p_id,))
+    cursor.execute("SELECT name, price FROM products WHERE id=?", (p_id,))
     prod = cursor.fetchone()
-    conn.close()
     
     if not prod:
+        conn.close()
         return
         
-    p_name, p_price, p_stock = prod
+    p_name, p_price = prod
+    cursor.execute("SELECT COUNT(*) FROM item_stock WHERE product_id=? AND status='available'", (p_id,))
+    p_stock = cursor.fetchone()[0]
+    conn.close()
+    
     set_setting(f"usr_buying_{user_id}", f"{p_id}:{p_name}:{p_price}:{p_stock}")
     set_setting(f"usr_step_{user_id}", "await_qty")
     
@@ -331,6 +345,57 @@ def select_prod_cb(call):
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("❌ Cancel", callback_data="cancel_action"))
     bot.send_message(call.message.chat.id, text, reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data == "confirm_order")
+def confirm_order_cb(call):
+    bot.answer_callback_query(call.id)
+    user_id = call.from_user.id
+    
+    p_id = get_setting(f"ord_pid_{user_id}")
+    qty = int(get_setting(f"ord_qty_{user_id}") or 1)
+    total_bdt = float(get_setting(f"ord_tot_{user_id}") or 0.0)
+    
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
+    bal = cursor.fetchone()[0]
+    
+    if bal < total_bdt:
+        bot.answer_callback_query(call.id, "❌ আপনার পর্যাপ্ত ব্যালেন্স নেই! Deposit করুন।", show_alert=True)
+        conn.close()
+        return
+        
+    cursor.execute("SELECT id, content FROM item_stock WHERE product_id=? AND status='available' LIMIT ?", (p_id, qty))
+    items = cursor.fetchall()
+    
+    if len(items) < qty:
+        bot.answer_callback_query(call.id, "❌ পর্যাপ্ত স্টক খালি নেই!", show_alert=True)
+        conn.close()
+        return
+        
+    delivered_lines = []
+    for item in items:
+        item_id, content = item
+        delivered_lines.append(content)
+        cursor.execute("UPDATE item_stock SET status='sold' WHERE id=?", (item_id,))
+        
+    cursor.execute("SELECT name FROM products WHERE id=?", (p_id,))
+    p_name = cursor.fetchone()[0]
+    
+    cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id=?", (total_bdt, user_id))
+    conn.commit()
+    conn.close()
+    
+    full_content = "\n".join(delivered_lines)
+    delivery_text = (
+        f"✅ <b>Mail / Product Delivered!</b>\n\n"
+        f"📧 <b>{qty}x {p_name}</b>\n"
+        f"💰 <b>Paid : {total_bdt:.2f} BDT</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"📱 <b>Details below ↓</b>\n\n"
+        f"<code>{full_content}</code>"
+    )
+    bot.edit_message_text(delivery_text, call.message.chat.id, call.message.message_id)
 
 # ----------------- 👤 PROFILE & REFERRAL SYSTEM -----------------
 @bot.message_handler(func=lambda msg: msg.text == "👤 My Profile")
@@ -363,7 +428,7 @@ def profile_cmd(message):
     )
     bot.send_message(message.chat.id, text)
 
-# ----------------- 💳 DEPOSIT SYSTEM (STATELESS) -----------------
+# ----------------- 💳 DEPOSIT SYSTEM -----------------
 @bot.message_handler(func=lambda msg: msg.text == "💳 Deposit")
 def deposit_cmd(message):
     text = "💳 <b>Deposit</b>\n\nSelect payment method:"
@@ -417,44 +482,6 @@ def dep_paid_cb(call):
     markup.add(types.InlineKeyboardButton("❌ Cancel", callback_data="cancel_action"))
     bot.send_message(call.message.chat.id, text, reply_markup=markup)
 
-@bot.callback_query_handler(func=lambda call: call.data == "confirm_order")
-def confirm_order_cb(call):
-    bot.answer_callback_query(call.id)
-    user_id = call.from_user.id
-    
-    p_id = get_setting(f"ord_pid_{user_id}")
-    qty = int(get_setting(f"ord_qty_{user_id}") or 1)
-    total_bdt = float(get_setting(f"ord_tot_{user_id}") or 0.0)
-    
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
-    bal = cursor.fetchone()[0]
-    
-    if bal < total_bdt:
-        bot.answer_callback_query(call.id, "❌ আপনার পর্যাপ্ত ব্যালেন্স নেই! Deposit করুন।", show_alert=True)
-        conn.close()
-        return
-        
-    cursor.execute("SELECT name, data_content FROM products WHERE id=?", (p_id,))
-    prod_info = cursor.fetchone()
-    p_name, content = prod_info[0], prod_info[1]
-    
-    cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id=?", (total_bdt, user_id))
-    cursor.execute("UPDATE products SET stock = stock - ? WHERE id=?", (qty, p_id))
-    conn.commit()
-    conn.close()
-    
-    delivery_text = (
-        f"✅ <b>Mail Delivered!</b>\n\n"
-        f"📧 <b>{qty}x {p_name}</b>\n"
-        f"💰 <b>Paid : {total_bdt:.2f} BDT</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━\n"
-        f"📱 <b>File / Account below ↓</b>\n\n"
-        f"<code>{content}</code>"
-    )
-    bot.edit_message_text(delivery_text, call.message.chat.id, call.message.message_id)
-
 @bot.message_handler(func=lambda msg: msg.text == "🔑 Get Code")
 def get_code_cmd(message):
     text = "🔑 <b>Get Code</b>\n\nSelect a link:"
@@ -496,7 +523,7 @@ def admin_panel_cmd(message):
         types.InlineKeyboardButton("📥 Upload OTP Numbers", callback_data="adm_upload_otp")
     )
     markup.add(
-        types.InlineKeyboardButton("🛍️ Add Shop Product", callback_data="adm_add_shop_stock"),
+        types.InlineKeyboardButton("🛍️ Add Shop Stock", callback_data="adm_add_shop_stock"),
         types.InlineKeyboardButton("👤 Edit User Balance", callback_data="adm_edit_balance")
     )
     markup.add(
@@ -516,10 +543,27 @@ def admin_cb_handler(call):
         cursor = conn.cursor()
         cursor.execute("DELETE FROM countries")
         cursor.execute("DELETE FROM products")
+        cursor.execute("DELETE FROM item_stock")
         cursor.execute("DELETE FROM numbers")
         conn.commit()
         conn.close()
-        bot.send_message(call.message.chat.id, "🗑️ আগের সকল কান্ট্রি ও শপ স্টক সম্পূর্ণ মুছে ফেলা হয়েছে! এখন আপনি নতুন ফ্রেশ ডেটা যোগ করতে পারেন।")
+        bot.send_message(call.message.chat.id, "🗑️ আগের সকল কান্ট্রি ও শপ ইনভেন্টরি স্টক ক্লিয়ার করা হয়েছে!")
+
+    elif data == "adm_add_shop_stock":
+        text = "🛍️ <b>Select Category to Add Product / Stock:</b>"
+        markup = types.InlineKeyboardMarkup(row_width=3)
+        markup.add(
+            types.InlineKeyboardButton("📧 Mail Stock", callback_data="addstk_Mail"),
+            types.InlineKeyboardButton("🌐 Proxy Stock", callback_data="addstk_Proxy"),
+            types.InlineKeyboardButton("🛡️ VPN Stock", callback_data="addstk_VPN")
+        )
+        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup)
+
+    elif data.startswith("addstk_"):
+        cat = data.split("_")[1]
+        set_setting(f"adm_add_cat_{user_id}", cat)
+        set_setting(f"adm_step_{user_id}", "add_prod_info")
+        bot.send_message(call.message.chat.id, f"<b>{cat} Stock:</b>\n\nপ্রোডাক্টের নাম এবং প্রতি পিসের দাম লিখুন:\n\n<code>প্রোডাক্টের নাম, দাম</code>\n\nউদাহরণ:\n<code>Fr Outlook, 0.80</code>\nঅথবা\n<code>PIA Proxy, 12.0</code>")
 
     elif data == "adm_view_pending_dep":
         conn = sqlite3.connect(DB_NAME)
@@ -559,10 +603,8 @@ def admin_cb_handler(call):
             bot.edit_message_text(f"✅ <b>Deposit Approved!</b> ({amt:.2f} BDT)", call.message.chat.id, call.message.message_id)
             try:
                 bot.send_message(u_id, f"🎉 আপনার ডিপোজিট এপ্রুভ হয়েছে এবং <b>{amt:.2f} BDT</b> অ্যাকাউন্টে যোগ হয়েছে!")
-            except:
-                pass
-        else:
-            conn.close()
+            except: pass
+        else: conn.close()
             
     elif data.startswith("adm_rej_dep_"):
         dep_id = data.split("_")[3]
@@ -621,10 +663,6 @@ def admin_cb_handler(call):
         set_setting(f"adm_step_{user_id}", "upload_otp")
         bot.send_message(call.message.chat.id, "📥 <b>OTP নম্বর আপলোড ফরম্যাট:</b>\n\n<code>+23674584135,FACEBOOK,CF</code>")
 
-    elif data == "adm_add_shop_stock":
-        set_setting(f"adm_step_{user_id}", "add_product")
-        bot.send_message(call.message.chat.id, "🛍️ <b>নতুন প্রডাক্ট যোগ ফরম্যাট (VPN, Mail, Proxy):</b>\n\n<code>CATEGORY,NAME,PRICE,STOCK,DATA</code>\n\nউদাহরণ:\n<code>VPN,NordVPN 30 Days,100,50,nord_login_details</code>\n<code>Proxy,PIA Proxy,12,100,ip:port:user:pass</code>")
-
     elif data == "adm_edit_balance":
         set_setting(f"adm_step_{user_id}", "edit_balance")
         bot.send_message(call.message.chat.id, "👤 <b>ইউজার ব্যালেন্স দিতে লিখুন:</b>\n\n<code>USER_ID,AMOUNT</code>\n\nউদাহরণ:\n<code>5455330929,100</code>")
@@ -633,13 +671,13 @@ def admin_cb_handler(call):
         set_setting(f"adm_step_{user_id}", "broadcast")
         bot.send_message(call.message.chat.id, "📢 <b>ইউজারদের কাছে পাঠাতে চাওয়া ব্রডকাস্ট মেসেজটি লিখুন:</b>")
 
-# ----------------- ALL TEXT INPUT MESSAGES HANDLER -----------------
-@bot.message_handler(func=lambda m: True, content_types=['text'])
-def global_text_handler(message):
+# ----------------- GLOBAL TEXT & FILE HANDLER -----------------
+@bot.message_handler(func=lambda m: True, content_types=['text', 'document'])
+def global_message_handler(message):
     user_id = message.from_user.id
-    txt = message.text.strip()
+    txt = message.text.strip() if message.text else ""
     
-    # Check Admin Steps First
+    # Check Admin Steps
     if user_id == ADMIN_ID:
         adm_step = get_setting(f"adm_step_{user_id}")
         if adm_step:
@@ -649,6 +687,65 @@ def global_text_handler(message):
                 set_setting(f"adm_step_{user_id}", "")
                 bot.send_message(message.chat.id, f"✅ সফলভাবে <b>{key}</b> আপডেট হয়ে <b>{txt}</b> হয়েছে!")
                 return
+            elif adm_step == "add_prod_info":
+                try:
+                    parts = txt.split(",")
+                    p_name = parts[0].strip()
+                    p_price = float(parts[1].strip())
+                    cat = get_setting(f"adm_add_cat_{user_id}") or "Mail"
+                    
+                    conn = sqlite3.connect(DB_NAME)
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT id FROM products WHERE category=? AND name=?", (cat, p_name))
+                    res = cursor.fetchone()
+                    
+                    if res:
+                        p_id = res[0]
+                        cursor.execute("UPDATE products SET price=? WHERE id=?", (p_price, p_id))
+                    else:
+                        cursor.execute("INSERT INTO products (category, name, price) VALUES (?, ?, ?)", (cat, p_name, p_price))
+                        p_id = cursor.lastrowid
+                    conn.commit()
+                    conn.close()
+                    
+                    set_setting(f"active_pid_{user_id}", str(p_id))
+                    set_setting(f"active_pname_{user_id}", p_name)
+                    set_setting(f"adm_step_{user_id}", "await_stock_items")
+                    
+                    bot.send_message(message.chat.id, f"✅ <b>{p_name} ({p_price:.2f} BDT)</b> প্রোডাক্ট সিলেক্ট হয়েছে!\n\nএখন এই প্রোডাক্টের মেইল/অ্যাকাউন্ট/প্রক্সি লিংকগুলোর তালিকা টেক্সট বা ফাইল হিসেবে টাইপ করে বা আপলোড করে পাঠান:\n<i>(প্রতি লাইনে ১টি করে ডাটা রাখবেন)</i>")
+                except:
+                    bot.send_message(message.chat.id, "❌ ফরম্যাট ভুল হয়েছে। লিখুন: `প্রোডাক্টের নাম, দাম`")
+                return
+            elif adm_step == "await_stock_items":
+                p_id = get_setting(f"active_pid_{user_id}")
+                p_name = get_setting(f"active_pname_{user_id}")
+                
+                content_text = ""
+                if message.document:
+                    file_info = bot.get_file(message.document.file_id)
+                    downloaded_file = bot.download_file(file_info.file_path)
+                    content_text = downloaded_file.decode('utf-8', errors='ignore')
+                else:
+                    content_text = txt
+                    
+                lines = [line.strip() for line in content_text.split("\n") if line.strip()]
+                
+                conn = sqlite3.connect(DB_NAME)
+                cursor = conn.cursor()
+                added_count = 0
+                for line in lines:
+                    cursor.execute("INSERT INTO item_stock (product_id, content) VALUES (?, ?)", (p_id, line))
+                    added_count += 1
+                conn.commit()
+                
+                cursor.execute("SELECT COUNT(*) FROM item_stock WHERE product_id=? AND status='available'", (p_id,))
+                total_stock = cursor.fetchone()[0]
+                conn.close()
+                
+                set_setting(f"adm_step_{user_id}", "")
+                bot.send_message(message.chat.id, f"🎉 সফলভাবে <b>{added_count} টি {p_name}</b> স্টকে যুক্ত হয়েছে!\n\n📦 <b>মোট বর্তমান স্টক:</b> {total_stock} টি।")
+                return
+
             elif adm_step == "add_country":
                 try:
                     parts = txt.split(",")
@@ -659,55 +756,11 @@ def global_text_handler(message):
                     conn.commit()
                     conn.close()
                     set_setting(f"adm_step_{user_id}", "")
-                    bot.send_message(message.chat.id, f"✅ সফলভাবে <b>{c_name} ({srv})</b> এর দাম <b>{price}৳</b> হিসেবে যোগ হয়েছে!")
-                except:
-                    bot.send_message(message.chat.id, "❌ ফরম্যাট ভুল হয়েছে। আবার চেষ্টা করুন।")
-                return
-            elif adm_step == "upload_otp":
-                lines = txt.split("\n")
-                added = 0
-                conn = sqlite3.connect(DB_NAME)
-                cursor = conn.cursor()
-                for line in lines:
-                    try:
-                        p = line.split(",")
-                        cursor.execute("INSERT OR IGNORE INTO numbers (phone_number, service, country, price) VALUES (?, ?, ?, ?)", (p[0].strip(), p[1].strip().upper(), p[2].strip().upper(), float(get_setting('api_price') or 0.11)))
-                        added += 1
-                    except: pass
-                conn.commit()
-                conn.close()
-                set_setting(f"adm_step_{user_id}", "")
-                bot.send_message(message.chat.id, f"✅ সফলভাবে <b>{added}</b> টি OTP নম্বর স্টকে যুক্ত হয়েছে!")
-                return
-            elif adm_step == "add_product":
-                try:
-                    p = txt.split(",")
-                    conn = sqlite3.connect(DB_NAME)
-                    cursor = conn.cursor()
-                    cursor.execute("INSERT INTO products (category, name, price, stock, data_content) VALUES (?, ?, ?, ?, ?)", (p[0].strip(), p[1].strip(), float(p[2].strip()), int(p[3].strip()), p[4].strip()))
-                    conn.commit()
-                    conn.close()
-                    set_setting(f"adm_step_{user_id}", "")
-                    bot.send_message(message.chat.id, f"✅ সফলভাবে <b>{p[1].strip()} ({p[0].strip()})</b> যোগ হয়েছে!")
+                    bot.send_message(message.chat.id, f"✅ সফলভাবে <b>{c_name} ({srv})</b> যোগ হয়েছে!")
                 except:
                     bot.send_message(message.chat.id, "❌ ফরম্যাট ভুল হয়েছে।")
                 return
-            elif adm_step == "edit_balance":
-                try:
-                    parts = txt.split(",")
-                    u_id, amt = int(parts[0].strip()), float(parts[1].strip())
-                    conn = sqlite3.connect(DB_NAME)
-                    cursor = conn.cursor()
-                    cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (amt, u_id))
-                    conn.commit()
-                    conn.close()
-                    set_setting(f"adm_step_{user_id}", "")
-                    bot.send_message(message.chat.id, f"✅ ইউজার <code>{u_id}</code> এর ব্যালেন্সে <b>{amt}৳</b> দেওয়া হয়েছে!")
-                    try: bot.send_message(u_id, f"🎁 অ্যাডমিন আপনার অ্যাকাউন্টে <b>{amt}৳</b> যুক্ত করেছেন!")
-                    except: pass
-                except:
-                    bot.send_message(message.chat.id, "❌ ভুল তথ্য দেওয়া হয়েছে।")
-                return
+
             elif adm_step == "broadcast":
                 conn = sqlite3.connect(DB_NAME)
                 cursor = conn.cursor()
@@ -721,10 +774,10 @@ def global_text_handler(message):
                         s += 1
                     except: f += 1
                 set_setting(f"adm_step_{user_id}", "")
-                bot.send_message(message.chat.id, f"✅ ব্রডকাস্ট সম্পন্ন হয়েছে!\n\nসফল: {s} জন\nব্যর্থ: {f} জন")
+                bot.send_message(message.chat.id, f"✅ ব্রডকাস্ট সম্পন্ন!\n\nসফল: {s} জন\nব্যর্থ: {f} জন")
                 return
 
-    # User Steps Handling
+    # User Steps
     usr_step = get_setting(f"usr_step_{user_id}")
     if usr_step == "await_qty":
         try:
@@ -815,9 +868,8 @@ def global_text_handler(message):
             conn.close()
             
             set_setting(f"usr_step_{user_id}", "")
-            bot.send_message(message.chat.id, "✅ আপনার ডিপোজিট রিকুয়েস্ট সফলভাবে সাবমিট হয়েছে। এডমিন ভেরিফাই করে এপ্রুভ করে দেবে।")
+            bot.send_message(message.chat.id, "✅ আপনার ডিপোজিট রিকুয়েস্ট সাবমিট হয়েছে। এডমিন চেক করে এপ্রুভ করে দেবে।")
             
-            # Send Notification to Admin
             admin_text = (
                 f"📥 <b>NEW DEPOSIT REQUEST!</b>\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
