@@ -1,19 +1,19 @@
-from flask import Flask
-import threading
-
-app = Flask('')
-@app.route('/')
-def home(): return "Bot is Alive!"
-threading.Thread(target=lambda: app.run(host='0.0.0.0', port=8080)).start()
 import sqlite3
 import telebot
 import time
 import requests
 import threading
+from flask import Flask
 from telebot import types
 
+# Keep-Alive Web Server for Render
+app = Flask('')
+@app.route('/')
+def home(): return "Bot is Alive!"
+threading.Thread(target=lambda: app.run(host='0.0.0.0', port=8080)).start()
+
 # ==================== CONFIGURATION ====================
-BOT_TOKEN = "8842802759:AAHmWCdirv1RsZdineS-TpL3Oy6BmA648uQ" # আপনার বটের টোকেন
+BOT_TOKEN = "8842802759:AAHmWCdirv1RsZdineS-Tpl3Oy6BmA648uQ" # আপনার নতুন সচল টোকেন
 ADMIN_ID = 8125384914                                       # আপনার Admin ID
 DB_NAME = "fresh_master_shop.db"
 # =======================================================
@@ -89,44 +89,16 @@ def init_db():
         'nagad_num': '01833878871',
         'binance_uid': '87654321',
         'min_deposit': '20.0',
-        'deposit_bonus': '5',        # 5% Deposit Bonus
-        'refer_reward': '0.11',     # 0.11 BDT Refer Bonus
-        'otp_reward': '0.10',       # OTP Bonus
-        'api_price': '0.11',        # Default Number Price
+        'deposit_bonus': '5',
+        'refer_reward': '0.11',
+        'otp_reward': '0.10',
+        'api_price': '0.11',
         'number_api_key': 'M455243ZFHT',
-        'number_api_url': 'https://5sim.net/v1/user/buy/activation',
         'min_withdraw': '50.0',
         'bot_status': 'ON'
     }
     for k, v in defaults.items():
         cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (k, v))
-        
-    # Default Countries
-    cursor.execute("SELECT COUNT(*) FROM countries")
-    if cursor.fetchone()[0] == 0:
-        default_countries = [
-            ('FACEBOOK', 'Benin', 'BJ', 0.12),
-            ('FACEBOOK', 'Central African Rep', 'CF', 0.12),
-            ('FACEBOOK', 'Guinea', 'GN', 0.12),
-            ('INSTAGRAM', 'Benin', 'BJ', 0.15),
-            ('TELEGRAM', 'USA', 'US', 0.50)
-        ]
-        cursor.executemany("INSERT INTO countries (service_name, country_name, country_code, price) VALUES (?, ?, ?, ?)", default_countries)
-
-    # Default Web Shop Products
-    cursor.execute("SELECT COUNT(*) FROM products")
-    if cursor.fetchone()[0] == 0:
-        items = [
-            ('Mail', 'Fr Outlook', 0.80, 285, 'JarettZilisch375818@hotmail.com|kudivb23896'),
-            ('Mail', 'Hotmail Trusted', 0.70, 902, 'JarettZilisch375818@hotmail.com|kudivb23896'),
-            ('Mail', 'Outlook Trusted', 0.70, 962, 'JarettZilisch375818@hotmail.com|kudivb23896'),
-            ('Mail', 'FB API Gmail (4H)', 8.00, 50, 'fb_api_gmail_auth_data_123'),
-            ('Proxy', 'PIA Proxy (200 MB)', 12.00, 100, '192.168.1.1:8080:user:pass'),
-            ('Proxy', 'Owl Proxy (200 MB)', 10.00, 100, '192.168.1.1:8080:user:pass'),
-            ('VPN', 'NordVPN 30 Days', 100.00, 50, 'vpn_key_nord_30days_66123'),
-            ('VPN', 'Bitdefender 30 Days', 90.00, 50, 'vpn_key_bitdef_30days_123')
-        ]
-        cursor.executemany("INSERT INTO products (category, name, price, stock, data_content) VALUES (?, ?, ?, ?, ?)", items)
         
     conn.commit()
     conn.close()
@@ -178,7 +150,7 @@ def start_cmd(message):
 
     bot.send_message(message.chat.id, "👋 <b>OTP Receiver Pro Bot</b>-এ আপনাকে স্বাগতম!", reply_markup=main_reply_keyboard(user_id))
 
-# ----------------- 📱 NUMBER'S BOT & AUTO-OTP ENGINE -----------------
+# ----------------- 📱 NUMBER'S BOT SYSTEM -----------------
 @bot.message_handler(func=lambda msg: msg.text == "📱 NUMBER'S")
 def numbers_cmd(message):
     conn = sqlite3.connect(DB_NAME)
@@ -186,6 +158,10 @@ def numbers_cmd(message):
     cursor.execute("SELECT DISTINCT service_name FROM countries")
     services = cursor.fetchall()
     conn.close()
+
+    if not services:
+        bot.send_message(message.chat.id, "⚠️ বর্তমানে কোনো সার্ভিস বা কান্ট্রি এভেলেবল নেই। অ্যাডমিনকে অ্যাড করতে বলুন।")
+        return
 
     markup = types.InlineKeyboardMarkup(row_width=2)
     for s in services:
@@ -237,7 +213,7 @@ def buy_number_click(call):
     cursor.execute("UPDATE numbers SET status='assigned' WHERE id=?", (num_id,))
     cursor.execute("UPDATE users SET balance = balance - ?, otp_count = otp_count + 1 WHERE user_id=?", (price, user_id))
     
-    # Check 10 OTP Referral Condition
+    # 10 OTP Referral Condition Check
     cursor.execute("SELECT referred_by, otp_count FROM users WHERE user_id=?", (user_id,))
     u_row = cursor.fetchone()
     if u_row and u_row[0] and u_row[1] == 10:
@@ -256,15 +232,7 @@ def buy_number_click(call):
 
 @bot.message_handler(func=lambda msg: msg.text == "🚥 LIVE TRAFFIC")
 def live_traffic_cmd(message):
-    text = (
-        "📊 <b>LIVE TRAFFIC</b>\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        "📱 <b>GATE NUMBER:</b> Active\n"
-        "🌐 <b>API NUMBER:</b>\n"
-        "🚫 Facebook — 5 | Cent. African Rep. (CF)\n"
-        "OTP: 5 [#English:5]"
-    )
-    bot.send_message(message.chat.id, text)
+    bot.send_message(message.chat.id, "📊 <b>LIVE TRAFFIC</b>\n━━━━━━━━━━━━━━━━━━\n🌐 <b>API Status:</b> Active\nOTP Monitoring Running...")
 
 # ----------------- 🛍️ WEB SHOP SYSTEM -----------------
 @bot.message_handler(func=lambda msg: msg.text == "🛍️ Web Shop")
@@ -286,6 +254,10 @@ def category_select_cb(call):
     cursor.execute("SELECT id, name, price, stock FROM products WHERE category=?", (category,))
     products = cursor.fetchall()
     conn.close()
+
+    if not products:
+        bot.answer_callback_query(call.id, "⚠️ এই ক্যাটাগরিতে বর্তমানে কোনো প্রডাক্ট নেই!", show_alert=True)
+        return
 
     text = f"<b>{category} — Select Category / Plan:</b>"
     markup = types.InlineKeyboardMarkup(row_width=1)
@@ -453,7 +425,7 @@ def profile_cmd(message):
     )
     bot.send_message(message.chat.id, text)
 
-# ----------------- 💳 DEPOSIT SYSTEM -----------------
+# ----------------- 💳 DEPOSIT SYSTEM (Direct TrxID Prompt) -----------------
 @bot.message_handler(func=lambda msg: msg.text == "💳 Deposit")
 def deposit_cmd(message):
     text = "💳 <b>Deposit</b>\n\nSelect payment method:"
@@ -533,10 +505,10 @@ def dep_paid_cb(call):
     method = st.get('method', 'bKash').upper()
     
     text = (
-        f"🚩 <b>Enter Transaction ID</b>\n\n"
+        f"🚩 <b>Enter Transaction ID (TrxID)</b>\n\n"
         f"Amount: {amt:.2f} BDT via {method}\n\n"
-        f"Send the TrxID from your payment SMS\n"
-        f"<i>(e.g. DF27TNVV17)</i>"
+        f"Send the TrxID from your payment SMS below:\n"
+        f"<i>(উদাহরণ: DF27TNVV17)</i>"
     )
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("❌ Cancel", callback_data="cancel_action"))
@@ -563,8 +535,9 @@ def process_dep_trxid(message):
         dep_id = cursor.lastrowid
         conn.close()
         
-        bot.send_message(message.chat.id, "✅ আপনার ডিপোজিট রিকুয়েস্ট সফলভাবে সাবমিট হয়েছে। এডমিন চেক করে এপ্রুভ করে দেবে।")
+        bot.send_message(message.chat.id, "✅ আপনার ডিপোজিট রিকুয়েস্ট সাবমিট হয়েছে। এডমিন ভেরিফাই করে এপ্রুভ করে দেবে।")
         
+        # Send Notification to Admin
         admin_text = (
             f"📥 <b>NEW DEPOSIT REQUEST!</b>\n"
             f"━━━━━━━━━━━━━━━━━━\n"
@@ -625,11 +598,12 @@ def admin_panel_cmd(message):
         types.InlineKeyboardButton("📥 Upload OTP Numbers", callback_data="adm_upload_otp")
     )
     markup.add(
-        types.InlineKeyboardButton("🛍️ Add Shop Stock", callback_data="adm_add_shop_stock"),
+        types.InlineKeyboardButton("🛍️ Add Shop Product", callback_data="adm_add_shop_stock"),
         types.InlineKeyboardButton("👤 Edit User Balance", callback_data="adm_edit_balance")
     )
     markup.add(
-        types.InlineKeyboardButton("📢 Broadcast Message", callback_data="adm_broadcast")
+        types.InlineKeyboardButton("📢 Broadcast Message", callback_data="adm_broadcast"),
+        types.InlineKeyboardButton("🗑️ Clear All Stock Data", callback_data="adm_clear_stock")
     )
     bot.send_message(message.chat.id, text, reply_markup=markup)
 
@@ -638,7 +612,17 @@ def admin_cb_handler(call):
     data = call.data
     bot.answer_callback_query(call.id)
     
-    if data == "adm_view_pending_dep":
+    if data == "adm_clear_stock":
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM countries")
+        cursor.execute("DELETE FROM products")
+        cursor.execute("DELETE FROM numbers")
+        conn.commit()
+        conn.close()
+        bot.send_message(call.message.chat.id, "🗑️ আগের সকল কান্ট্রি ও শপ স্টক সম্পূর্ণ মুছে ফেলা হয়েছে! এখন আপনি নতুন ফ্রেশ ডেটা যোগ করতে পারেন।")
+
+    elif data == "adm_view_pending_dep":
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
         cursor.execute("SELECT id, user_id, amount, method, trx_id FROM deposits WHERE status='pending'")
