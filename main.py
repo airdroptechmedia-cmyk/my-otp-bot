@@ -13,7 +13,7 @@ def home(): return "Bot is Alive!"
 threading.Thread(target=lambda: app.run(host='0.0.0.0', port=8080)).start()
 
 # ==================== CONFIGURATION ====================
-BOT_TOKEN = "8842802759:AAHmWCdirv1RsZdineS-Tpl3Oy6BmA648uQ" # আপনার নতুন সচল টোকেন
+BOT_TOKEN = "8842802759:AAHmWCdirv1RsZdineS-TpL3Oy6BmA648uQ" # আপনার নতুন সচল টোকেন
 ADMIN_ID = 8125384914                                       # আপনার Admin ID
 DB_NAME = "fresh_master_shop.db"
 # =======================================================
