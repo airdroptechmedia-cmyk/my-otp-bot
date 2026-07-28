@@ -1170,7 +1170,7 @@ def global_message_handler(message):
             num = get_user_state(user_id, "dep_num")
             clear_user_state(user_id)
             
-            badge = "🌸 <b>bKash Personal Number</b>" if method == "bkash" else ("🟠 <b>Nagad Personal Number</b>" if method == "nagad" else "🟡 <b>Binance Pay / UID</b>")
+            badge = "💸 <b>bKash Personal Number</b>" if method == "bkash" else ("💸 <b>Nagad Personal Number</b>" if method == "nagad" else "💸 <b>Binance Pay / UID</b>")
             
             text = (
                 f"{badge}\n\n"
