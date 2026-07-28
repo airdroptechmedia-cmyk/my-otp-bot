@@ -117,6 +117,18 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )''')
         
+        # Purchases History Table (Matches Screenshot 3 Profile)
+        cursor.execute('''CREATE TABLE IF NOT EXISTS purchases (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            product_name TEXT,
+            category TEXT,
+            qty INTEGER,
+            total_price REAL,
+            content TEXT,
+            date TEXT DEFAULT CURRENT_DATE
+        )''')
+        
         # Dynamic Countries / Services Table
         cursor.execute('''CREATE TABLE IF NOT EXISTS countries (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -128,7 +140,7 @@ def init_db():
             price REAL DEFAULT 0.00
         )''')
         
-        # Products Table (Web Shop with Subcategory / Duration)
+        # Products Table
         cursor.execute('''CREATE TABLE IF NOT EXISTS products (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             category TEXT,
@@ -136,12 +148,6 @@ def init_db():
             name TEXT,
             price REAL
         )''')
-        
-        # Add subcategory column if missing (Migration Safety)
-        try:
-            cursor.execute("ALTER TABLE products ADD COLUMN subcategory TEXT DEFAULT ''")
-        except Exception:
-            pass
         
         # Inventory Stock Table
         cursor.execute('''CREATE TABLE IF NOT EXISTS item_stock (
@@ -167,7 +173,7 @@ def init_db():
             value TEXT
         )''')
         
-        # Default Settings (Updated with requested Payment Info)
+        # Default Settings
         defaults = {
             'bkash_num': '01625212609',
             'nagad_num': '01625212609',
@@ -195,10 +201,9 @@ def init_db():
             ]
             cursor.executemany("INSERT INTO countries (service_name, service_code, country_name, country_flag, country_code, price) VALUES (?, ?, ?, ?, ?, ?)", default_countries)
 
-        # Default Proxy Sample if empty
         cursor.execute("SELECT COUNT(*) FROM products WHERE category='Proxy'")
         if cursor.fetchone()[0] == 0:
-            cursor.execute("INSERT INTO products (category, subcategory, name, price) VALUES ('Proxy', '200 MB', 'Owl Proxy', 10.00)")
+            cursor.execute("INSERT INTO products (category, subcategory, name, price) VALUES ('Proxy', '200 MB each', 'Owl Proxy', 10.00)")
 
         conn.commit()
 
@@ -524,7 +529,7 @@ def dummy_copy_cb(call):
 def live_traffic_cmd(message):
     bot.send_message(message.chat.id, "📊 <b>LIVE TRAFFIC</b>\n━━━━━━━━━━━━━━━━━━\n🌐 <b>SMS Engine:</b> Connected\nOTP Monitoring Running 24/7 Auto Polling...")
 
-# ----------------- 🛍️ WEB SHOP SYSTEM (VPN & PROXY SYSTEM UPDATED) -----------------
+# ----------------- 🛍️ WEB SHOP SYSTEM -----------------
 @bot.message_handler(func=lambda msg: msg.text == "🛍️ Web Shop")
 def buy_products_cmd(message):
     if not is_user_joined(message.from_user.id):
@@ -545,7 +550,6 @@ def category_select_cb(call):
     bot.answer_callback_query(call.id)
     category = call.data.split("_")[1]
     
-    # 1. VPN Category Flow (Matches Screenshot 2)
     if category == "VPN":
         text = "🛡️ <b>VPN — Select Duration:</b>"
         markup = types.InlineKeyboardMarkup(row_width=2)
@@ -561,7 +565,6 @@ def category_select_cb(call):
         bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup)
         return
 
-    # 2. Proxy Category Flow (Matches Screenshot 1)
     elif category == "Proxy":
         with get_db() as conn:
             cursor = conn.cursor()
@@ -587,7 +590,6 @@ def category_select_cb(call):
             bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup)
             return
 
-    # 3. Mail Category Flow
     else:
         with get_db() as conn:
             cursor = conn.cursor()
@@ -681,6 +683,7 @@ def select_prod_cb(call):
     markup.add(types.InlineKeyboardButton("❌ Cancel", callback_data="cancel_action"))
     bot.send_message(call.message.chat.id, text, reply_markup=markup)
 
+# ----------------- ORDER CONFIRMATION & SCREENSHOT 3 EXACT FORMATTING -----------------
 @bot.callback_query_handler(func=lambda call: call.data.startswith("cfmbuy_"))
 def confirm_order_cb(call):
     bot.answer_callback_query(call.id)
@@ -734,9 +737,16 @@ def confirm_order_cb(call):
             cursor.execute("UPDATE item_stock SET status='sold' WHERE id=?", (item_id,))
             
         cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id=?", (total_bdt, user_id))
+        
+        # Save to Purchase History (Matches Screenshot 3)
+        joined_content = "\n".join(delivered_lines)
+        cursor.execute(
+            "INSERT INTO purchases (user_id, product_name, category, qty, total_price, content) VALUES (?, ?, ?, ?, ?, ?)",
+            (user_id, p_name, p_cat, qty, total_bdt, joined_content)
+        )
         conn.commit()
-    
-    # Custom Delivery Message for PROXY (Address, Port, User, Pass in Tap-to-Copy format)
+
+    # SCREENSHOT 3 EXACT FORMATTING FOR PROXY
     if p_cat == "Proxy":
         formatted_proxies = []
         for idx, line in enumerate(delivered_lines, 1):
@@ -745,40 +755,88 @@ def confirm_order_cb(call):
                 ip, port, usr, pwd = parts
                 formatted_proxies.append(
                     f"🌐 <b>Proxy #{idx}</b>\n"
-                    f"📍 Address: <code>{ip}</code>\n"
-                    f"🔌 Port: <code>{port}</code>\n"
-                    f"👤 Username: <code>{usr}</code>\n"
-                    f"🔑 Password: <code>{pwd}</code>\n"
-                    f"🔗 Full Format: <code>{line}</code>"
+                    f"🖥️ <code>{ip}</code>\n"
+                    f"🔌 <code>{port}</code>\n"
+                    f"👤 <code>{usr}</code>\n"
+                    f"🔓 <code>{pwd}</code>"
                 )
             else:
                 formatted_proxies.append(f"🌐 <b>Proxy #{idx}:</b> <code>{line}</code>")
-        
-        proxy_msg_text = (
-            f"✅ <b>Proxy Order Delivered!</b>\n\n"
-            f"🌐 <b>{qty}x {p_name} ({p_sub})</b>\n"
-            f"💰 <b>Paid : {total_bdt:.2f} BDT</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━\n" +
-            "\n\n".join(formatted_proxies) +
-            "\n\n<i>(যেকোনো তথ্যের ওপর টাচ করলেই অটোমেটিক কপি হয়ে যাবে!)</i>"
-        )
-        bot.edit_message_text(proxy_msg_text, call.message.chat.id, call.message.message_id)
 
-    # Delivery Message for VPN / MAIL (File + Text Message)
+        # Message 1: Credentials
+        msg1_text = (
+            f"✅ <b>Proxy Delivered!</b>\n\n"
+            f"⚡ <b>{p_name}</b>\n"
+            f"_______________________\n\n" +
+            "\n\n".join(formatted_proxies)
+        )
+        bot.edit_message_text(msg1_text, call.message.chat.id, call.message.message_id)
+
+        # Message 2: Payment Summary (Exactly as shown in Screenshot 3)
+        sub_info = f" ({p_sub})" if p_sub else ""
+        msg2_text = (
+            f"⚡ <b>{p_name} — × {qty} units{sub_info}</b>\n"
+            f"💰 <b>{total_bdt:.2f} BDT</b>\n"
+            f"_______________________\n"
+            f"📩 <b>Credentials sent above ↑</b>"
+        )
+        bot.send_message(call.message.chat.id, msg2_text)
+
+    # SCREENSHOT 3 EXACT FORMATTING FOR VPN
+    elif p_cat == "VPN":
+        formatted_vpns = []
+        for idx, line in enumerate(delivered_lines, 1):
+            if ":" in line:
+                email, pwd = line.split(":", 1)
+                formatted_vpns.append(
+                    f"🛡️ <b>VPN #{idx}</b>\n"
+                    f"🖥️ <code>{email}</code>\n"
+                    f"🔓 <code>{pwd}</code>"
+                )
+            elif " | " in line:
+                email, pwd = line.split(" | ", 1)
+                formatted_vpns.append(
+                    f"🛡️ <b>VPN #{idx}</b>\n"
+                    f"🖥️ <code>{email}</code>\n"
+                    f"🔓 <code>{pwd}</code>"
+                )
+            else:
+                formatted_vpns.append(f"🛡️ <b>VPN #{idx}:</b> <code>{line}</code>")
+
+        # Message 1: Credentials
+        msg1_text = (
+            f"✅ <b>VPN Delivered!</b>\n\n"
+            f"⚡ <b>{p_name}</b>\n"
+            f"_______________________\n\n" +
+            "\n\n".join(formatted_vpns)
+        )
+        bot.edit_message_text(msg1_text, call.message.chat.id, call.message.message_id)
+
+        # Message 2: Summary
+        sub_info = f" ({p_sub})" if p_sub else ""
+        msg2_text = (
+            f"⚡ <b>{p_name} — × {qty} units{sub_info}</b>\n"
+            f"💰 <b>{total_bdt:.2f} BDT</b>\n"
+            f"_______________________\n"
+            f"📩 <b>Credentials sent above ↑</b>"
+        )
+        bot.send_message(call.message.chat.id, msg2_text)
+
+    # MAIL DELIVERY (Excel File + Summary)
     else:
         excel_file = create_excel_document(p_name, delivered_lines)
         
         delivery_text = (
-            f"✅ <b>Order Delivered!</b>\n\n"
-            f"📦 <b>{qty}x {p_name} {f'({p_sub})' if p_sub else ''}</b>\n"
+            f"✅ <b>Mail Delivered!</b>\n\n"
+            f"📧 <b>{qty}x {p_name}</b>\n"
             f"💰 <b>Paid : {total_bdt:.2f} BDT</b>\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
-            f"📱 <b>Accounts Excel File Attached Below ↓</b>"
+            f"📱 <b>File below ↓</b>"
         )
         bot.edit_message_text(delivery_text, call.message.chat.id, call.message.message_id)
         bot.send_document(call.message.chat.id, excel_file)
 
-# ----------------- 👤 PROFILE & REFERRAL SYSTEM -----------------
+# ----------------- 👤 PROFILE & PURCHASE HISTORY (SCREENSHOT 3 MATCHED) -----------------
 @bot.message_handler(func=lambda msg: msg.text == "👤 My Profile")
 def profile_cmd(message):
     if not is_user_joined(message.from_user.id):
@@ -809,9 +867,39 @@ def profile_cmd(message):
         f"🤝 <b>Referrals :</b> {refs}\n\n"
         f"🔗 <b>Referral Link:</b>\n<code>{ref_link}</code>"
     )
-    bot.send_message(message.chat.id, text)
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("📜 Purchase History", callback_data="view_purchases"))
+    bot.send_message(message.chat.id, text, reply_markup=markup)
 
-# ----------------- 💳 DEPOSIT SYSTEM (UPDATED WITH 💸 LOGO & NUMBERS) -----------------
+@bot.callback_query_handler(func=lambda call: call.data == "view_purchases")
+def view_purchases_cb(call):
+    bot.answer_callback_query(call.id)
+    user_id = call.from_user.id
+    
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT product_name, category, total_price, content, date FROM purchases WHERE user_id=? ORDER BY id DESC LIMIT 5", (user_id,))
+        purchases = cursor.fetchall()
+
+    if not purchases:
+        bot.send_message(call.message.chat.id, "📜 <b>আপনার কোনো পূর্ববর্তী পারচেজ হিস্ট্রি নেই।</b>")
+        return
+
+    for p in purchases:
+        p_name, p_cat, p_price, p_content, p_date = p
+        p_type = f"{p_cat.upper()}_QTY"
+        
+        # EXACT SCREENSHOT 3 PROFILE FORMATTING
+        hist_text = (
+            f"⚡ <b>Purchase Details</b>\n\n"
+            f"<b>Type</b>     : {p_type}\n"
+            f"<b>Date</b>     : {p_date}\n"
+            f"<b>Total</b>    : {p_price:.2f} BDT\n\n"
+            f"<b>Credentials:</b>\n<code>{p_content}</code>"
+        )
+        bot.send_message(call.message.chat.id, hist_text)
+
+# ----------------- 💳 DEPOSIT SYSTEM -----------------
 @bot.message_handler(func=lambda msg: msg.text == "💳 Deposit")
 def deposit_cmd(message):
     if not is_user_joined(message.from_user.id):
@@ -1146,11 +1234,11 @@ def global_message_handler(message):
                     cat = get_user_state(user_id, "adm_add_cat", "Mail")
                     
                     if cat == "VPN":
-                        p_sub = parts[0].strip() # Duration: 3 Days, 7 Days, etc.
+                        p_sub = parts[0].strip()
                         p_name = parts[1].strip()
                         p_price = float(parts[2].strip())
                     elif cat == "Proxy":
-                        p_sub = parts[0].strip() # Plan: 200 MB, etc.
+                        p_sub = parts[0].strip()
                         p_name = parts[1].strip()
                         p_price = float(parts[2].strip())
                     else:
