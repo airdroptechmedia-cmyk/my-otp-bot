@@ -15,7 +15,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Bot is Alive 24/7!"
+    return "VoltXSMS OTP Bot is Alive 24/7!"
 
 def run_flask():
     try:
@@ -45,7 +45,6 @@ DB_NAME = "fresh_master_shop.db"
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 
-# In-Memory Session State Manager (Prevents DB bloat)
 USER_STATES = {}
 
 def set_user_state(user_id, key, value):
@@ -92,6 +91,7 @@ def create_excel_document(product_name, lines):
 def init_db():
     with get_db() as conn:
         cursor = conn.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL;")
         
         # Users Table
         cursor.execute('''CREATE TABLE IF NOT EXISTS users (
@@ -103,27 +103,31 @@ def init_db():
             joined_date TEXT DEFAULT CURRENT_DATE
         )''')
         
-        # OTP Stock Table
-        cursor.execute('''CREATE TABLE IF NOT EXISTS numbers (
+        # Active API Number Orders Table (VoltXSMS Live Tracker)
+        cursor.execute('''CREATE TABLE IF NOT EXISTS active_orders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            phone_number TEXT UNIQUE,
+            user_id INTEGER,
+            order_id TEXT,
+            phone_number TEXT,
             service TEXT,
             country TEXT,
-            price REAL,
-            status TEXT DEFAULT 'available'
+            status TEXT DEFAULT 'WAITING',
+            last_code TEXT DEFAULT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )''')
         
-        # Dynamic Countries Table (Flag + Stock)
+        # Dynamic Countries / Services Table
         cursor.execute('''CREATE TABLE IF NOT EXISTS countries (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             service_name TEXT,
+            service_code TEXT DEFAULT 'fb',
             country_name TEXT,
             country_flag TEXT DEFAULT '🌐',
             country_code TEXT,
-            price REAL
+            price REAL DEFAULT 0.00
         )''')
         
-        # Products Table
+        # Products Table (Web Shop)
         cursor.execute('''CREATE TABLE IF NOT EXISTS products (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             category TEXT,
@@ -131,7 +135,7 @@ def init_db():
             price REAL
         )''')
         
-        # Item Level Inventory Stock Table
+        # Inventory Stock Table
         cursor.execute('''CREATE TABLE IF NOT EXISTS item_stock (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             product_id INTEGER,
@@ -163,11 +167,9 @@ def init_db():
             'min_deposit': '20.0',
             'deposit_bonus': '5',
             'refer_reward': '0.11',
-            'otp_reward': '0.10',
-            'api_price': '0.30',
-            'number_api_key': 'M455243ZFHT',
-            'min_withdraw': '50.0',
-            'bot_status': 'ON',
+            'number_api_key': 'YOUR_VOLTXSMS_API_KEY_HERE',
+            'api_base_url': 'https://voltxsms.com/stubs/handler_api.php',
+            'force_channels': '',
             'otp_group_link': 'https://t.me/your_otp_group'
         }
         for k, v in defaults.items():
@@ -176,14 +178,14 @@ def init_db():
         cursor.execute("SELECT COUNT(*) FROM countries")
         if cursor.fetchone()[0] == 0:
             default_countries = [
-                ('Facebook', 'Uzbekistan', '🇺🇿', 'UZ', 0.30),
-                ('Facebook', 'Tanzania Top', '🇹🇿', 'TZ', 0.30),
-                ('Facebook', 'Tajikistan', '🇹🇯', 'TJ', 0.30),
-                ('Facebook', 'Egypt S1', '🇪🇬', 'EG', 0.30),
-                ('Facebook', 'Sudan FB', '🇸🇩', 'SD', 0.30),
-                ('FB NEW', 'Uzbekistan', '🇺🇿', 'UZ', 0.30)
+                ('Facebook', 'fb', 'Uzbekistan', '🇺🇿', 'uz', 0.00),
+                ('Facebook', 'fb', 'Tanzania', '🇹🇿', 'tz', 0.00),
+                ('Facebook', 'fb', 'Tajikistan', '🇹🇯', 'tj', 0.00),
+                ('Facebook', 'fb', 'Egypt', '🇪🇬', 'eg', 0.00),
+                ('Instagram', 'ig', 'Uzbekistan', '🇺🇿', 'uz', 0.00),
+                ('Telegram', 'tg', 'Uzbekistan', '🇺🇿', 'uz', 0.00)
             ]
-            cursor.executemany("INSERT INTO countries (service_name, country_name, country_flag, country_code, price) VALUES (?, ?, ?, ?, ?)", default_countries)
+            cursor.executemany("INSERT INTO countries (service_name, service_code, country_name, country_flag, country_code, price) VALUES (?, ?, ?, ?, ?, ?)", default_countries)
 
         conn.commit()
 
@@ -202,10 +204,146 @@ def set_setting(key, value):
         cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, str(value)))
         conn.commit()
 
+# ----------------- VOLTXSMS API ENGINE -----------------
+def voltx_get_number(service_code, country_code):
+    api_key = get_setting('number_api_key')
+    base_url = get_setting('api_base_url') or "https://voltxsms.com/stubs/handler_api.php"
+    
+    url = f"{base_url}?api_key={api_key}&action=getNumber&service={service_code}&country={country_code}"
+    try:
+        res = requests.get(url, timeout=12).text.strip()
+        if res.startswith("ACCESS_NUMBER"):
+            parts = res.split(":")
+            order_id = parts[1]
+            phone_num = parts[2]
+            return True, order_id, phone_num
+        elif "NO_NUMBERS" in res:
+            return False, "❌ প্রোভাইডারের কাছে বর্তমানে কোনো ফ্রি নম্বর নেই!", None
+        elif "NO_BALANCE" in res:
+            return False, "❌ API প্যানেলে পর্যাপ্ত ব্যালেন্স নেই!", None
+        elif "BAD_KEY" in res:
+            return False, "❌ VoltXSMS API Key ভুল দেওয়া হয়েছে!", None
+        else:
+            return False, f"⚠️ API Error: {res}", None
+    except Exception as e:
+        return False, f"⚠️ সংযোগ বিচ্ছিন্ন: {e}", None
+
+def voltx_check_sms(order_id):
+    api_key = get_setting('number_api_key')
+    base_url = get_setting('api_base_url') or "https://voltxsms.com/stubs/handler_api.php"
+    
+    url = f"{base_url}?api_key={api_key}&action=getStatus&id={order_id}"
+    try:
+        res = requests.get(url, timeout=8).text.strip()
+        if "STATUS_OK" in res:
+            code = res.split(":")[1].strip()
+            return "RECEIVED", code
+        elif "STATUS_CANCEL" in res:
+            return "CANCELLED", None
+        else:
+            return "WAITING", None
+    except Exception:
+        return "WAITING", None
+
+# ----------------- 🔄 AUTO OTP POLLING THREAD (24/7 AUTO CHECK) -----------------
+def auto_otp_checker_loop():
+    print("🚀 Auto OTP Checker Thread Started...")
+    while True:
+        try:
+            with get_db() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT id, user_id, order_id, phone_number, service FROM active_orders WHERE status='WAITING'")
+                active_orders = cursor.fetchall()
+
+            for order in active_orders:
+                db_id, user_id, order_id, phone_num, service_name = order
+                status, otp_code = voltx_check_sms(order_id)
+
+                if status == "RECEIVED" and otp_code:
+                    # Update Database Order Status
+                    with get_db() as conn:
+                        cursor = conn.cursor()
+                        cursor.execute("UPDATE active_orders SET status='COMPLETED', last_code=? WHERE id=?", (otp_code, db_id))
+                        cursor.execute("UPDATE users SET otp_count = otp_count + 1 WHERE user_id=?", (user_id,))
+                        conn.commit()
+
+                    # Push Instant Telegram Message with Tap-To-Copy OTP
+                    text = (
+                        f"📩 <b>NEW OTP RECEIVED FOR {service_name.upper()}!</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━\n"
+                        f"📱 <b>Number:</b> <code>{phone_num}</code>\n"
+                        f"🔑 <b>Your OTP Code:</b> <code>{otp_code}</code>\n"
+                        f"━━━━━━━━━━━━━━━━━━━\n"
+                        f"👉 <i>কোডের ওপর টাচ করলেই অটোমেটিক কপি হয়ে যাবে!</i>"
+                    )
+                    markup = types.InlineKeyboardMarkup()
+                    markup.add(types.InlineKeyboardButton("📋 Copy Code", callback_data=f"dummy_copy"))
+                    try:
+                        bot.send_message(user_id, text, reply_markup=markup)
+                    except Exception as e:
+                        print(f"Failed to send OTP to user {user_id}: {e}")
+
+                elif status == "CANCELLED":
+                    with get_db() as conn:
+                        cursor = conn.cursor()
+                        cursor.execute("UPDATE active_orders SET status='CANCELLED' WHERE id=?", (db_id,))
+                        conn.commit()
+
+        except Exception as e:
+            print(f"Error in OTP Checker Loop: {e}")
+
+        time.sleep(5)  # Runs every 5 seconds
+
+threading.Thread(target=auto_otp_checker_loop, daemon=True).start()
+
+# ----------------- FORCE JOIN CHECKER -----------------
+def is_user_joined(user_id):
+    if user_id == ADMIN_ID:
+        return True
+    raw_channels = get_setting('force_channels')
+    if not raw_channels:
+        return True
+    
+    channels = [c.strip() for c in raw_channels.split(',') if c.strip()]
+    for ch in channels:
+        try:
+            member = bot.get_chat_member(ch, user_id)
+            if member.status not in ['creator', 'administrator', 'member']:
+                return False
+        except Exception:
+            pass
+    return True
+
+def send_force_join_msg(chat_id):
+    raw_channels = get_setting('force_channels')
+    channels = [c.strip() for c in raw_channels.split(',') if c.strip()]
+    
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    for idx, ch in enumerate(channels, start=1):
+        clean_ch = ch.replace("@", "")
+        markup.add(types.InlineKeyboardButton(f"📢 Join Channel #{idx}", url=f"https://t.me/{clean_ch}"))
+        
+    markup.add(types.InlineKeyboardButton("✅ Verify / I Have Joined", callback_data="check_join_verify"))
+    bot.send_message(
+        chat_id,
+        "⚠️ <b>বট ব্যবহার করতে হলে আপনাকে আমাদের অফিশিয়াল চ্যানেলে জয়েন হতে হবে!</b>\n\n"
+        "নিচের বাটনে চাপ দিয়ে চ্যানেলে জয়েন করুন, তারপর <b>Verify</b> বাটনে ক্লিক করুন:",
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "check_join_verify")
+def check_join_verify_cb(call):
+    if is_user_joined(call.from_user.id):
+        bot.answer_callback_query(call.id, "🎉 ভেরিফিকেশন সফল হয়েছে!", show_alert=True)
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+        bot.send_message(call.message.chat.id, "👋 <b>স্বাগতম!</b> এখন আপনি বটের সকল সুবিধা উপভোগ করতে পারবেন।", reply_markup=main_reply_keyboard(call.from_user.id))
+    else:
+        bot.answer_callback_query(call.id, "❌ আপনি এখনো সবগুলো চ্যানেলে জয়েন করেননি! আগে জয়েন করুন।", show_alert=True)
+
 # ----------------- MAIN KEYBOARD -----------------
 def main_reply_keyboard(user_id):
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add(types.KeyboardButton("📱 Get Number"), types.KeyboardButton("🛍️ Web Shop"))
+    markup.add(types.KeyboardButton("📱 Get Free Number"), types.KeyboardButton("🛍️ Web Shop"))
     markup.add(types.KeyboardButton("👤 My Profile"), types.KeyboardButton("💳 Deposit"))
     markup.add(types.KeyboardButton("🔑 Get Code"), types.KeyboardButton("🚥 LIVE TRAFFIC"))
     markup.add(types.KeyboardButton("🎧 Support"))
@@ -217,6 +355,11 @@ def main_reply_keyboard(user_id):
 @bot.message_handler(commands=['start'])
 def start_cmd(message):
     user_id = message.from_user.id
+    
+    if not is_user_joined(user_id):
+        send_force_join_msg(message.chat.id)
+        return
+
     args = message.text.split()
     referred_by = int(args[1]) if len(args) > 1 and args[1].isdigit() and int(args[1]) != user_id else None
 
@@ -231,25 +374,29 @@ def start_cmd(message):
                 cursor.execute("UPDATE users SET referrals = referrals + 1 WHERE user_id=?", (referred_by,))
             conn.commit()
 
-    bot.send_message(message.chat.id, "👋 <b>OTP RECIVER PRO BOT</b>-এ আপনাকে স্বাগতম!", reply_markup=main_reply_keyboard(user_id))
+    bot.send_message(message.chat.id, "👋 <b>VOLTXSMS AUTOMATED OTP BOT</b>-এ আপনাকে স্বাগতম!", reply_markup=main_reply_keyboard(user_id))
 
-# ----------------- 📱 NUMBER'S BOT SYSTEM -----------------
-@bot.message_handler(func=lambda msg: msg.text in ["📱 Get Number", "📱 NUMBER'S"])
+# ----------------- 📱 AUTOMATED VOLTXSMS NUMBER GETTER -----------------
+@bot.message_handler(func=lambda msg: msg.text in ["📱 Get Number", "📱 Get Free Number", "📱 NUMBER'S"])
 def numbers_cmd(message):
+    if not is_user_joined(message.from_user.id):
+        send_force_join_msg(message.chat.id)
+        return
+
     with get_db() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT DISTINCT service_name FROM countries")
+        cursor.execute("SELECT DISTINCT service_name, service_code FROM countries")
         services = cursor.fetchall()
 
     if not services:
-        bot.send_message(message.chat.id, "⚠️ বর্তমানে কোনো সার্ভিস বা কান্ট্রি এভেলেবল নেই। এডমিন প্যানেল থেকে যোগ করুন।")
+        bot.send_message(message.chat.id, "⚠️ বর্তমানে কোনো সার্ভিস এভেলেবল নেই। এডমিন প্যানেল থেকে যোগ করুন।")
         return
 
     markup = types.InlineKeyboardMarkup(row_width=2)
     for s in services:
         markup.add(types.InlineKeyboardButton(f"⚙️ {s[0]}", callback_data=f"usr_srv_{s[0]}"))
 
-    bot.send_message(message.chat.id, "⚙️ <b>Select a Service:</b>", reply_markup=markup)
+    bot.send_message(message.chat.id, "⚙️ <b>Select a Service for OTP:</b>", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("usr_srv_"))
 def user_service_click(call):
@@ -258,17 +405,14 @@ def user_service_click(call):
     
     with get_db() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT country_name, country_flag, country_code, price FROM countries WHERE service_name=?", (service_name,))
+        cursor.execute("SELECT country_name, country_flag, country_code, service_code FROM countries WHERE service_name=?", (service_name,))
         countries = cursor.fetchall()
         
         markup = types.InlineKeyboardMarkup(row_width=1)
         for c in countries:
-            c_name, c_flag, c_code, c_price = c
-            cursor.execute("SELECT COUNT(*) FROM numbers WHERE service=? AND country=? AND status='available'", (service_name, c_code))
-            stk = cursor.fetchone()[0]
-            display_stock = stk if stk > 0 else 0
-            btn_text = f"{c_flag} {c_name} ({display_stock})"
-            markup.add(types.InlineKeyboardButton(btn_text, callback_data=f"buy_{service_name}_{c_code}_{c_price}"))
+            c_name, c_flag, c_code, s_code = c
+            btn_text = f"{c_flag} {c_name} (Auto API)"
+            markup.add(types.InlineKeyboardButton(btn_text, callback_data=f"buy_{s_code}_{c_code}_{service_name}"))
 
     markup.add(types.InlineKeyboardButton("⬅️ Back To Services", callback_data="back_to_services"))
     bot.edit_message_text(f"🌍 <b>Select country for {service_name}:</b> ⬇️", call.message.chat.id, call.message.message_id, reply_markup=markup)
@@ -289,67 +433,95 @@ def back_to_services_cb(call):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("buy_"))
 def buy_number_click(call):
-    _, service, country_code, price = call.data.split("_")
-    price = float(price)
+    bot.answer_callback_query(call.id, "⌛ API থেকে নম্বর নেওয়া হচ্ছে, অপেক্ষা করুন...", show_alert=False)
+    _, s_code, c_code, service_name = call.data.split("_")
     user_id = call.from_user.id
+
+    # Call VoltXSMS Live API
+    success, order_id_or_err, phone_num = voltx_get_number(s_code, c_code)
+
+    if not success:
+        bot.send_message(call.message.chat.id, f"❌ <b>নম্বর আনা সম্ভব হয়নি!</b>\n\nকারন: {order_id_or_err}")
+        return
 
     with get_db() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
-        user_row = cursor.fetchone()
-        bal = user_row[0] if user_row else 0.0
-
-        if bal < price:
-            bot.answer_callback_query(call.id, f"❌ আপনার পর্যাপ্ত ব্যালেন্স নেই! প্রয়োজন: {price:.2f}৳", show_alert=True)
-            return
-
-        cursor.execute("SELECT country_name, country_flag FROM countries WHERE service_name=? AND country_code=?", (service, country_code))
-        c_info = cursor.fetchone()
-        c_name = c_info[0] if c_info else country_code
-        c_flag = c_info[1] if c_info else "🇺🇿"
-
-        cursor.execute("SELECT id, phone_number FROM numbers WHERE service=? AND country=? AND status='available' LIMIT 4", (service, country_code))
-        num_rows = cursor.fetchall()
-
-        # Check stock strictly (Prevent Fake Charges)
-        if not num_rows:
-            bot.answer_callback_query(call.id, "❌ এই কান্ট্রির নম্বর বর্তমানে আউট অফ স্টক!", show_alert=True)
-            return
-
-        num_list = [n[1] for n in num_rows]
-        for n in num_rows:
-            cursor.execute("UPDATE numbers SET status='assigned' WHERE id=?", (n[0],))
-
-        cursor.execute("UPDATE users SET balance = balance - ?, otp_count = otp_count + 1 WHERE user_id=?", (price, user_id))
+        cursor.execute(
+            "INSERT INTO active_orders (user_id, order_id, phone_number, service, country) VALUES (?, ?, ?, ?, ?)",
+            (user_id, order_id_or_err, phone_num, service_name, c_code)
+        )
         conn.commit()
+        db_order_id = cursor.lastrowid
 
-    bot.answer_callback_query(call.id)
-    numbers_text = "\n".join([f"{c_flag} <code>{p}</code>" for p in num_list])
     otp_group_link = get_setting('otp_group_link') or 'https://t.me/your_otp_group'
 
     text = (
-        f"{c_flag} <b>{c_name}</b> 👤 <b>Number Assigned</b>\n\n"
-        f"💰 <b>Per OTP : {price:.2f} TK</b>\n"
+        f"📱 <b>{service_name.upper()} NUMBER ASSIGNED!</b>\n\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
-        f"{numbers_text}\n\n"
-        f"<i>Waiting for OTP... (অটোমেটিক চেক হচ্ছে)</i>"
+        f"📞 <b>Phone Number:</b> <code>{phone_num}</code>\n"
+        f"<i>(নম্বরে ক্লিক করলেই অটোমেটিক কপি হয়ে যাবে)</i>\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"⏳ <b>Waiting for OTP...</b>\n"
+        f"<i>ফেসবুক/সার্ভিস থেকে কোড পাঠানোর সাথে সাথে অটোমেটিক মেসেজ চলে আসবে!</i>"
     )
     markup = types.InlineKeyboardMarkup(row_width=2)
-    markup.add(types.InlineKeyboardButton("👀 OTP GROUP ↗️", url=otp_group_link))
+    markup.add(types.InlineKeyboardButton("🔄 Refresh / Check OTP", callback_data=f"check_otp_{db_order_id}"))
     markup.add(
-        types.InlineKeyboardButton("⚙️ Next Number", callback_data=f"buy_{service}_{country_code}_{price}"),
-        types.InlineKeyboardButton("🌐 Country", callback_data=f"usr_srv_{service}")
+        types.InlineKeyboardButton("⚙️ Get Another Number", callback_data=f"usr_srv_{service_name}"),
+        types.InlineKeyboardButton("👀 OTP GROUP ↗️", url=otp_group_link)
     )
 
     bot.send_message(call.message.chat.id, text, reply_markup=markup)
 
+@bot.callback_query_handler(func=lambda call: call.data.startswith("check_otp_"))
+def check_otp_cb(call):
+    db_id = call.data.split("_")[2]
+    
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT order_id, phone_number, last_code, status FROM active_orders WHERE id=?", (db_id,))
+        res = cursor.fetchone()
+
+    if res:
+        order_id, phone_num, last_code, status = res
+        if last_code:
+            bot.answer_callback_query(call.id, "✅ OTP পাওয়া গেছে!", show_alert=True)
+            bot.send_message(
+                call.message.chat.id,
+                f"📩 <b>OTP Received for <code>{phone_num}</code></b>\n\n"
+                f"🔑 Your Code: <code>{last_code}</code>\n\n"
+                f"<i>(কোডের ওপর ক্লিক করলেই অটো কপি হয়ে যাবে)</i>"
+            )
+            return
+
+        # Check API status on button click
+        status_res, code = voltx_check_sms(order_id)
+        if status_res == "RECEIVED" and code:
+            bot.answer_callback_query(call.id, "✅ OTP পাওয়া গেছে!", show_alert=True)
+            bot.send_message(
+                call.message.chat.id,
+                f"📩 <b>OTP Received for <code>{phone_num}</code></b>\n\n"
+                f"🔑 Your Code: <code>{code}</code>\n\n"
+                f"<i>(কোডের ওপর ক্লিক করলেই অটো কপি হয়ে যাবে)</i>"
+            )
+        else:
+            bot.answer_callback_query(call.id, "⏳ এখনো কোনো OTP আসেনি! অনুগ্রহ করে অপেক্ষা করুন...", show_alert=True)
+
+@bot.callback_query_handler(func=lambda call: call.data == "dummy_copy")
+def dummy_copy_cb(call):
+    bot.answer_callback_query(call.id, "📋 টেক্সটের ওপর ক্লিক করুন, অটো কপি হয়ে যাবে!", show_alert=False)
+
 @bot.message_handler(func=lambda msg: msg.text == "🚥 LIVE TRAFFIC")
 def live_traffic_cmd(message):
-    bot.send_message(message.chat.id, "📊 <b>LIVE TRAFFIC</b>\n━━━━━━━━━━━━━━━━━━\n🌐 <b>API Status:</b> Active\nOTP Monitoring Running 24/7...")
+    bot.send_message(message.chat.id, "📊 <b>LIVE TRAFFIC</b>\n━━━━━━━━━━━━━━━━━━\n🌐 <b>VoltXSMS Engine:</b> Connected\nOTP Monitoring Running 24/7 Auto Polling...")
 
 # ----------------- 🛍️ WEB SHOP SYSTEM -----------------
 @bot.message_handler(func=lambda msg: msg.text == "🛍️ Web Shop")
 def buy_products_cmd(message):
+    if not is_user_joined(message.from_user.id):
+        send_force_join_msg(message.chat.id)
+        return
+
     text = "🛍️ <b>Buy Products</b>\n\nSelect a category:"
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
@@ -373,7 +545,7 @@ def category_select_cb(call):
             bot.answer_callback_query(call.id, "⚠️ এই ক্যাটাগরিতে বর্তমানে কোনো প্রডাক্ট নেই!", show_alert=True)
             return
 
-        text = f"<b>{category} — Select Category:</b>"
+        text = f"<b>{category} — Select Product:</b>"
         markup = types.InlineKeyboardMarkup(row_width=1)
         
         for p in products:
@@ -434,7 +606,6 @@ def confirm_order_cb(call):
     bot.answer_callback_query(call.id)
     user_id = call.from_user.id
     
-    # 1. IMMEDIATELY remove/disable inline buttons to prevent double click spam
     try:
         bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
     except Exception:
@@ -443,10 +614,18 @@ def confirm_order_cb(call):
     parts = call.data.split("_")
     p_id = int(parts[1])
     qty = int(parts[2])
-    total_bdt = float(parts[3])
     
     with get_db() as conn:
         cursor = conn.cursor()
+        cursor.execute("SELECT name, price FROM products WHERE id=?", (p_id,))
+        prod = cursor.fetchone()
+        if not prod:
+            bot.edit_message_text("❌ প্রোডাক্টটি পাওয়া যায়নি!", call.message.chat.id, call.message.message_id)
+            return
+            
+        p_name, p_price = prod
+        total_bdt = qty * p_price
+        
         cursor.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
         user_row = cursor.fetchone()
         bal = user_row[0] if user_row else 0.0
@@ -474,9 +653,6 @@ def confirm_order_cb(call):
             delivered_lines.append(content)
             cursor.execute("UPDATE item_stock SET status='sold' WHERE id=?", (item_id,))
             
-        cursor.execute("SELECT name FROM products WHERE id=?", (p_id,))
-        p_name = cursor.fetchone()[0]
-        
         cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id=?", (total_bdt, user_id))
         conn.commit()
     
@@ -495,6 +671,10 @@ def confirm_order_cb(call):
 # ----------------- 👤 PROFILE & REFERRAL SYSTEM -----------------
 @bot.message_handler(func=lambda msg: msg.text == "👤 My Profile")
 def profile_cmd(message):
+    if not is_user_joined(message.from_user.id):
+        send_force_join_msg(message.chat.id)
+        return
+
     user_id = message.from_user.id
     with get_db() as conn:
         cursor = conn.cursor()
@@ -515,24 +695,30 @@ def profile_cmd(message):
         f"🆔 <b>User ID  :</b> <code>{user_id}</code>\n"
         f"💰 <b>Balance  :</b> {bal:.2f} BDT / {usdt:.4f} USDT\n"
         f"🥳 <b>Joined   :</b> {joined}\n"
-        f"🔢 <b>OTP Used :</b> {otps}\n"
+        f"🔢 <b>OTP Received :</b> {otps}\n"
         f"🤝 <b>Referrals :</b> {refs}\n\n"
-        f"🔗 <b>Referral Link:</b>\n<code>{ref_link}</code>\n"
-        f"<i>(নোট: যাকে রেফার করবেন তাকে অন্তত ১০টি OTP নিতে হবে বোনাস পাওয়ার জন্য)</i>"
+        f"🔗 <b>Referral Link:</b>\n<code>{ref_link}</code>"
     )
     bot.send_message(message.chat.id, text)
 
 # ----------------- 💳 DEPOSIT SYSTEM -----------------
 @bot.message_handler(func=lambda msg: msg.text == "💳 Deposit")
 def deposit_cmd(message):
-    text = "💳 <b>Deposit</b>\n\nSelect payment method:"
+    if not is_user_joined(message.from_user.id):
+        send_force_join_msg(message.chat.id)
+        return
+
+    text = (
+        "💳 <b>Select Deposit Payment Method:</b>\n\n"
+        "নিচের তালিকা থেকে আপনার সুবিধাজনক পেমেন্ট গেটওয়ে সিলেক্ট করুন:"
+    )
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
-        types.InlineKeyboardButton("🌸 bKash", callback_data="dep_bkash"),
-        types.InlineKeyboardButton("🟠 Nagad", callback_data="dep_nagad")
+        types.InlineKeyboardButton("💸 bKash (Personal)", callback_data="dep_bkash"),
+        types.InlineKeyboardButton("💸 Nagad (Personal)", callback_data="dep_nagad")
     )
     markup.add(
-        types.InlineKeyboardButton("🟡 Binance (USDT)", callback_data="dep_binance"),
+        types.InlineKeyboardButton("💸 Binance (Pay / UID)", callback_data="dep_binance"),
         types.InlineKeyboardButton("🎟️ Cash Voucher", callback_data="dep_voucher")
     )
     bot.send_message(message.chat.id, text, reply_markup=markup)
@@ -551,7 +737,9 @@ def dep_method_cb(call):
         set_user_state(user_id, "dep_num", num)
         set_user_state(user_id, "step", "await_dep_amt")
         
-        text = f"🌸 <b>{method.upper()}</b>\n\nEnter deposit amount in BDT:\n<i>(Minimum: {min_dep} BDT)</i>"
+        header_badge = "🌸 <b>[ bKash Personal Payment ]</b>" if method == "bkash" else ("🟠 <b>[ Nagad Personal Payment ]</b>" if method == "nagad" else "🟡 <b>[ Binance USDT Payment ]</b>")
+        
+        text = f"{header_badge}\n\nEnter deposit amount in BDT:\n<i>(Minimum: {min_dep} BDT)</i>"
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("❌ Cancel", callback_data="cancel_action"))
         bot.send_message(call.message.chat.id, text, reply_markup=markup)
@@ -568,7 +756,7 @@ def dep_paid_cb(call):
     
     text = (
         f"🚩 <b>Enter Transaction ID (TrxID)</b>\n\n"
-        f"Amount: {float(amt):.2f} BDT via {method.upper()}\n\n"
+        f"Amount: <b>{float(amt):.2f} BDT</b> via <b>{method.upper()}</b>\n\n"
         f"Send the TrxID from your payment SMS below:\n"
         f"<i>(উদাহরণ: DF27TNVV17)</i>"
     )
@@ -604,23 +792,26 @@ def admin_panel_cmd(message):
     text = "📊 <b>MASTER ADMIN CONTROL PANEL</b>\n\nসবকিছু কাস্টমাইজ করতে নিচের অপশনগুলো ব্যবহার করুন:"
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
-        types.InlineKeyboardButton("⚙️ Edit Payment Numbers", callback_data="adm_edit_payments"),
-        types.InlineKeyboardButton("🎁 Edit Bonus & Rewards", callback_data="adm_edit_bonuses")
+        types.InlineKeyboardButton("🔑 VoltXSMS API Key", callback_data="adm_edit_apikey"),
+        types.InlineKeyboardButton("🌐 VoltXSMS API URL", callback_data="adm_edit_apiurl")
+    )
+    markup.add(
+        types.InlineKeyboardButton("📢 Force Join Channels", callback_data="adm_edit_force_join"),
+        types.InlineKeyboardButton("⚙️ Edit Payment Numbers", callback_data="adm_edit_payments")
     )
     markup.add(
         types.InlineKeyboardButton("👀 Pending Deposits", callback_data="adm_view_pending_dep"),
-        types.InlineKeyboardButton("🔑 Edit Number API Key", callback_data="adm_edit_apikey")
+        types.InlineKeyboardButton("🎁 Edit Bonus & Rewards", callback_data="adm_edit_bonuses")
     )
     markup.add(
-        types.InlineKeyboardButton("🌐 Add Country/Service", callback_data="adm_add_country"),
-        types.InlineKeyboardButton("📥 Upload OTP Numbers", callback_data="adm_upload_otp")
+        types.InlineKeyboardButton("🌐 Add Service/Country", callback_data="adm_add_country"),
+        types.InlineKeyboardButton("🛍️ Add Shop Stock", callback_data="adm_add_shop_stock")
     )
     markup.add(
-        types.InlineKeyboardButton("🛍️ Add Shop Stock", callback_data="adm_add_shop_stock"),
-        types.InlineKeyboardButton("👤 Edit User Balance", callback_data="adm_edit_balance")
+        types.InlineKeyboardButton("👤 Edit User Balance", callback_data="adm_edit_balance"),
+        types.InlineKeyboardButton("📢 Broadcast Message", callback_data="adm_broadcast")
     )
     markup.add(
-        types.InlineKeyboardButton("📢 Broadcast Message", callback_data="adm_broadcast"),
         types.InlineKeyboardButton("🗑️ Reset & Clear All Stock", callback_data="adm_clear_stock")
     )
     bot.send_message(message.chat.id, text, reply_markup=markup)
@@ -630,16 +821,35 @@ def admin_cb_handler(call):
     data = call.data
     bot.answer_callback_query(call.id)
     user_id = call.from_user.id
-    
-    if data == "adm_clear_stock":
+
+    if data == "adm_edit_apikey":
+        curr_key = get_setting('number_api_key')
+        set_user_state(user_id, "adm_step", "set_setting:number_api_key")
+        bot.send_message(call.message.chat.id, f"🔑 <b>বর্তমান VoltXSMS API Key:</b>\n<code>{curr_key}</code>\n\nনতুন API Key লিখে মেসেজ দিন:")
+
+    elif data == "adm_edit_apiurl":
+        curr_url = get_setting('api_base_url')
+        set_user_state(user_id, "adm_step", "set_setting:api_base_url")
+        bot.send_message(call.message.chat.id, f"🌐 <b>বর্তমান API Base URL:</b>\n<code>{curr_url}</code>\n\nনতুন API URL লিখে মেসেজ দিন:")
+
+    elif data == "adm_edit_force_join":
+        curr = get_setting('force_channels') or "None"
+        set_user_state(user_id, "adm_step", "set_setting:force_channels")
+        bot.send_message(
+            call.message.chat.id,
+            f"📢 <b>Current Required Channels:</b> <code>{curr}</code>\n\n"
+            f"ইউজারদের বাধ্যতামূলক জয়েন করানোর জন্য চ্যানেলগুলোর ইউজারনেম কমা দিয়ে দিয়ে লিখুন:\n"
+            f"উদাহরণ: <code>@channel1,@channel2</code>"
+        )
+
+    elif data == "adm_clear_stock":
         with get_db() as conn:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM countries")
             cursor.execute("DELETE FROM products")
             cursor.execute("DELETE FROM item_stock")
-            cursor.execute("DELETE FROM numbers")
             conn.commit()
-        bot.send_message(call.message.chat.id, "🗑️ আগের সকল কান্ট্রি ও শপ ইনভেন্টরি স্টক ক্লিয়ার করা হয়েছে!")
+        bot.send_message(call.message.chat.id, "🗑️ আগের সকল সার্ভিস ও ইনভেন্টরি ক্লিয়ার করা হয়েছে!")
 
     elif data == "adm_add_shop_stock":
         text = "🛍️ <b>Select Category to Add Product / Stock:</b>"
@@ -655,7 +865,7 @@ def admin_cb_handler(call):
         cat = data.split("_")[1]
         set_user_state(user_id, "adm_add_cat", cat)
         set_user_state(user_id, "adm_step", "add_prod_info")
-        bot.send_message(call.message.chat.id, f"<b>{cat} Stock:</b>\n\nপ্রোডাক্টের নাম এবং প্রতি পিসের দাম লিখুন:\n\n<code>প্রোডাক্টের নাম, দাম</code>\n\nউদাহরণ:\n<code>Fr Outlook, 0.80</code>\nঅথবা\n<code>Hotmail Trusted, 0.70</code>")
+        bot.send_message(call.message.chat.id, f"<b>{cat} Stock:</b>\n\nপ্রোডাক্টের নাম এবং প্রতি পিসের দাম লিখুন:\n\n<code>প্রোডাক্টের নাম, দাম</code>")
 
     elif data == "adm_view_pending_dep":
         with get_db() as conn:
@@ -708,7 +918,7 @@ def admin_cb_handler(call):
         bk = get_setting('bkash_num')
         ng = get_setting('nagad_num')
         bn = get_setting('binance_uid')
-        text = f"⚙️ <b>Edit Payment Methods</b>\n\nbKash: {bk}\nNagad: {ng}\nBinance UID: {bn}"
+        text = f"⚙️ <b>Edit Payment Methods</b>\n\n🌸 bKash: {bk}\n🟠 Nagad: {ng}\n🟡 Binance UID: {bn}"
         markup = types.InlineKeyboardMarkup(row_width=1)
         markup.add(
             types.InlineKeyboardButton("🌸 Edit bKash Number", callback_data="set_pay_bkash"),
@@ -739,22 +949,21 @@ def admin_cb_handler(call):
         set_user_state(user_id, "adm_step", f"set_setting:{key}")
         bot.send_message(call.message.chat.id, "✏️ <b>নতুন পরিমাণটি টাইপ করে পাঠান:</b>")
 
-    elif data == "adm_edit_apikey":
-        curr_key = get_setting('number_api_key')
-        set_user_state(user_id, "adm_step", "set_setting:number_api_key")
-        bot.send_message(call.message.chat.id, f"🔑 <b>বর্তমান API Key:</b> <code>{curr_key}</code>\n\nনতুন Virtual Number API Key টাইপ করে পাঠান:")
-
     elif data == "adm_add_country":
         set_user_state(user_id, "adm_step", "add_country")
-        bot.send_message(call.message.chat.id, "🌐 <b>নতুন কান্ট্রি যোগ করার ফরম্যাট:</b>\n\n<code>SERVICE,COUNTRY_NAME,FLAG,CODE,PRICE</code>\n\nউদাহরণ:\n<code>Facebook,Uzbekistan,🇺🇿,UZ,0.30</code>\n<code>Facebook,Bangladesh,🇧🇩,BD,0.20</code>")
-
-    elif data == "adm_upload_otp":
-        set_user_state(user_id, "adm_step", "upload_otp")
-        bot.send_message(call.message.chat.id, "📥 <b>OTP নম্বর আপলোড ফরম্যাট:</b>\n\n<code>998951234567,Facebook,UZ</code>")
+        bot.send_message(
+            call.message.chat.id,
+            "🌐 <b>নতুন সার্ভিস / কান্ট্রি যোগ করার ফরম্যাট:</b>\n\n"
+            "<code>SERVICE_NAME,SERVICE_CODE,COUNTRY_NAME,FLAG,COUNTRY_CODE</code>\n\n"
+            "উদাহরণ (Facebook - Uzbekistan):\n"
+            "<code>Facebook,fb,Uzbekistan,🇺🇿,uz</code>\n\n"
+            "উদাহরণ (Instagram - Bangladesh):\n"
+            "<code>Instagram,ig,Bangladesh,🇧🇩,bd</code>"
+        )
 
     elif data == "adm_edit_balance":
         set_user_state(user_id, "adm_step", "edit_balance")
-        bot.send_message(call.message.chat.id, "👤 <b>ইউজার ব্যালেন্স দিতে লিখুন:</b>\n\n<code>USER_ID,AMOUNT</code>\n\nউদাহরণ:\n<code>5455330929,100</code>")
+        bot.send_message(call.message.chat.id, "👤 <b>ইউজার ব্যালেন্স দিতে লিখুন:</b>\n\n<code>USER_ID,AMOUNT</code>")
 
     elif data == "adm_broadcast":
         set_user_state(user_id, "adm_step", "broadcast")
@@ -775,6 +984,29 @@ def global_message_handler(message):
                 set_setting(key, txt)
                 clear_user_state(user_id)
                 bot.send_message(message.chat.id, f"✅ সফলভাবে <b>{key}</b> আপডেট হয়ে <b>{txt}</b> হয়েছে!")
+                return
+
+            elif adm_step == "add_country":
+                try:
+                    parts = txt.split(",")
+                    srv_name = parts[0].strip()
+                    srv_code = parts[1].strip()
+                    c_name = parts[2].strip()
+                    flag = parts[3].strip()
+                    c_code = parts[4].strip()
+                    
+                    with get_db() as conn:
+                        cursor = conn.cursor()
+                        cursor.execute(
+                            "INSERT INTO countries (service_name, service_code, country_name, country_flag, country_code, price) VALUES (?, ?, ?, ?, ?, 0.00)",
+                            (srv_name, srv_code, c_name, flag, c_code)
+                        )
+                        conn.commit()
+                    
+                    clear_user_state(user_id)
+                    bot.send_message(message.chat.id, f"✅ সফলভাবে <b>{flag} {c_name} ({srv_name})</b> সার্ভিস যোগ হয়েছে!")
+                except Exception:
+                    bot.send_message(message.chat.id, "❌ ফরম্যাট ভুল হয়েছে। ফরম্যাট: `SERVICE_NAME,SERVICE_CODE,COUNTRY_NAME,FLAG,COUNTRY_CODE`")
                 return
 
             elif adm_step == "add_prod_info":
@@ -801,7 +1033,7 @@ def global_message_handler(message):
                     set_user_state(user_id, "active_pname", p_name)
                     set_user_state(user_id, "adm_step", "await_stock_items")
                     
-                    bot.send_message(message.chat.id, f"✅ <b>{p_name} ({p_price:.2f} BDT)</b> প্রোডাক্ট সিলেক্ট হয়েছে!\n\nএখন এই প্রোডাক্টের মেইল/অ্যাকাউন্টগুলোর তালিকা টেক্সট মেসেজ বা Excel/TXT ফাইলে পাঠান:")
+                    bot.send_message(message.chat.id, f"✅ <b>{p_name} ({p_price:.2f} BDT)</b> সিলেক্ট হয়েছে!\n\nএখন ফাইল বা টেক্সট পাঠিয়ে স্টক দিন:")
                 except Exception:
                     bot.send_message(message.chat.id, "❌ ফরম্যাট ভুল হয়েছে। লিখুন: `প্রোডাক্টের নাম, দাম`")
                 return
@@ -809,10 +1041,8 @@ def global_message_handler(message):
             elif adm_step == "await_stock_items":
                 p_id = get_user_state(user_id, "active_pid")
                 p_name = get_user_state(user_id, "active_pname")
-                
                 lines = []
                 
-                # FIXED: Proper Parsing for Excel (.xlsx) Documents
                 if message.document:
                     file_info = bot.get_file(message.document.file_id)
                     downloaded_file = bot.download_file(file_info.file_path)
@@ -828,7 +1058,7 @@ def global_message_handler(message):
                                     if row_vals:
                                         lines.append(" | ".join(row_vals))
                         except Exception as e:
-                            bot.send_message(message.chat.id, f"❌ Excel ফাইল পড়তে সমস্যা হয়েছে: {e}")
+                            bot.send_message(message.chat.id, f"❌ Excel ফাইল পড়তে সমস্যা: {e}")
                             return
                     else:
                         try:
@@ -840,7 +1070,7 @@ def global_message_handler(message):
                     lines = [line.strip() for line in txt.split("\n") if line.strip()]
 
                 if not lines:
-                    bot.send_message(message.chat.id, "⚠️ কোনো অ্যাকাউন্ট পাওয়া যায়নি! ফাইল বা টেক্সট সঠিকভাবে পাঠান।")
+                    bot.send_message(message.chat.id, "⚠️ কোনো অ্যাকাউন্ট পাওয়া যায়নি!")
                     return
                 
                 with get_db() as conn:
@@ -850,32 +1080,9 @@ def global_message_handler(message):
                         cursor.execute("INSERT INTO item_stock (product_id, content) VALUES (?, ?)", (p_id, line))
                         added_count += 1
                     conn.commit()
-                    
-                    cursor.execute("SELECT COUNT(*) FROM item_stock WHERE product_id=? AND status='available'", (p_id,))
-                    total_stock = cursor.fetchone()[0]
                 
                 clear_user_state(user_id)
-                bot.send_message(message.chat.id, f"🎉 সফলভাবে <b>{added_count} টি {p_name}</b> স্টকে যুক্ত হয়েছে!\n\n📦 <b>মোট বর্তমান স্টক:</b> {total_stock} টি।")
-                return
-
-            elif adm_step == "add_country":
-                try:
-                    parts = txt.split(",")
-                    srv = parts[0].strip()
-                    c_name = parts[1].strip()
-                    flag = parts[2].strip()
-                    c_code = parts[3].strip().upper()
-                    price = float(parts[4].strip())
-                    
-                    with get_db() as conn:
-                        cursor = conn.cursor()
-                        cursor.execute("INSERT INTO countries (service_name, country_name, country_flag, country_code, price) VALUES (?, ?, ?, ?, ?)", (srv, c_name, flag, c_code, price))
-                        conn.commit()
-                    
-                    clear_user_state(user_id)
-                    bot.send_message(message.chat.id, f"✅ সফলভাবে <b>{flag} {c_name} ({srv})</b> সার্ভিস যোগ হয়েছে!")
-                except Exception:
-                    bot.send_message(message.chat.id, "❌ ফরম্যাট ভুল হয়েছে। ফরম্যাট: `SERVICE,COUNTRY_NAME,FLAG,CODE,PRICE`")
+                bot.send_message(message.chat.id, f"🎉 সফলভাবে <b>{added_count} টি {p_name}</b> স্টকে যুক্ত হয়েছে!")
                 return
 
             elif adm_step == "edit_balance":
@@ -948,7 +1155,7 @@ def global_message_handler(message):
             )
             markup = types.InlineKeyboardMarkup(row_width=2)
             markup.add(
-                types.InlineKeyboardButton("✅ Confirm Order", callback_data=f"cfmbuy_{p_id}_{qty}_{total_bdt:.2f}"),
+                types.InlineKeyboardButton("✅ Confirm Order", callback_data=f"cfmbuy_{p_id}_{qty}"),
                 types.InlineKeyboardButton("❌ Cancel", callback_data="cancel_action")
             )
             bot.send_message(message.chat.id, text, reply_markup=markup)
@@ -968,12 +1175,14 @@ def global_message_handler(message):
             num = get_user_state(user_id, "dep_num")
             clear_user_state(user_id)
             
+            badge = "🌸 <b>bKash Personal Number</b>" if method == "bkash" else ("🟠 <b>Nagad Personal Number</b>" if method == "nagad" else "🟡 <b>Binance Pay / UID</b>")
+            
             text = (
-                f"💳 <b>{method.upper()}</b>\n\n"
+                f"{badge}\n\n"
                 f"Send <b>{amt:.2f} BDT</b> to:\n"
                 f"<code>{num}</code>\n\n"
-                f"<i>Tap above to copy number/UID</i>\n\n"
-                f"After sending, tap Paid below:"
+                f"<i>(নম্বরটি কপি করতে লেখার ওপর ট্যাপ করুন)</i>\n\n"
+                f"টাকা পাঠানোর পর নিচের Paid বাটনে ক্লিক করুন:"
             )
             markup = types.InlineKeyboardMarkup(row_width=1)
             markup.add(
@@ -1025,7 +1234,7 @@ def global_message_handler(message):
         return
 
 # ----------------- 🔄 24/7 AUTO-RECONNECT ENGINE -----------------
-print("🤖 Master Bot Started Successfully & Running 24/7...")
+print("🤖 VoltXSMS Automated OTP Bot Started Successfully & Running 24/7...")
 while True:
     try:
         bot.infinity_polling(timeout=20, long_polling_timeout=10)
