@@ -15,7 +15,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "VoltXSMS OTP Bot is Alive 24/7!"
+    return "Automated SMS Bot is Alive 24/7!"
 
 def run_flask():
     try:
@@ -103,7 +103,7 @@ def init_db():
             joined_date TEXT DEFAULT CURRENT_DATE
         )''')
         
-        # Active API Number Orders Table (VoltXSMS Live Tracker)
+        # Active API Number Orders Table
         cursor.execute('''CREATE TABLE IF NOT EXISTS active_orders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER,
@@ -204,7 +204,7 @@ def set_setting(key, value):
         cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, str(value)))
         conn.commit()
 
-# ----------------- VOLTXSMS API ENGINE -----------------
+# ----------------- SMS API ENGINE -----------------
 def voltx_get_number(service_code, country_code):
     api_key = get_setting('number_api_key')
     base_url = get_setting('api_base_url') or "https://voltxsms.com/stubs/handler_api.php"
@@ -222,7 +222,7 @@ def voltx_get_number(service_code, country_code):
         elif "NO_BALANCE" in res:
             return False, "❌ API প্যানেলে পর্যাপ্ত ব্যালেন্স নেই!", None
         elif "BAD_KEY" in res:
-            return False, "❌ VoltXSMS API Key ভুল দেওয়া হয়েছে!", None
+            return False, "❌ API Key ভুল দেওয়া হয়েছে!", None
         else:
             return False, f"⚠️ API Error: {res}", None
     except Exception as e:
@@ -245,7 +245,7 @@ def voltx_check_sms(order_id):
     except Exception:
         return "WAITING", None
 
-# ----------------- 🔄 AUTO OTP POLLING THREAD (24/7 AUTO CHECK) -----------------
+# ----------------- 🔄 AUTO OTP POLLING THREAD -----------------
 def auto_otp_checker_loop():
     print("🚀 Auto OTP Checker Thread Started...")
     while True:
@@ -260,14 +260,12 @@ def auto_otp_checker_loop():
                 status, otp_code = voltx_check_sms(order_id)
 
                 if status == "RECEIVED" and otp_code:
-                    # Update Database Order Status
                     with get_db() as conn:
                         cursor = conn.cursor()
                         cursor.execute("UPDATE active_orders SET status='COMPLETED', last_code=? WHERE id=?", (otp_code, db_id))
                         cursor.execute("UPDATE users SET otp_count = otp_count + 1 WHERE user_id=?", (user_id,))
                         conn.commit()
 
-                    # Push Instant Telegram Message with Tap-To-Copy OTP
                     text = (
                         f"📩 <b>NEW OTP RECEIVED FOR {service_name.upper()}!</b>\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
@@ -292,7 +290,7 @@ def auto_otp_checker_loop():
         except Exception as e:
             print(f"Error in OTP Checker Loop: {e}")
 
-        time.sleep(5)  # Runs every 5 seconds
+        time.sleep(5)
 
 threading.Thread(target=auto_otp_checker_loop, daemon=True).start()
 
@@ -374,9 +372,9 @@ def start_cmd(message):
                 cursor.execute("UPDATE users SET referrals = referrals + 1 WHERE user_id=?", (referred_by,))
             conn.commit()
 
-    bot.send_message(message.chat.id, "👋 <b>OTP RECIVER PRO BOT</b>-এ আপনাকে স্বাগতম!", reply_markup=main_reply_keyboard(user_id))
+    bot.send_message(message.chat.id, "👋 <b>AUTOMATED OTP BOT</b>-এ আপনাকে স্বাগতম!", reply_markup=main_reply_keyboard(user_id))
 
-# ----------------- 📱 AUTOMATED VOLTXSMS NUMBER GETTER -----------------
+# ----------------- 📱 AUTOMATED NUMBER GETTER -----------------
 @bot.message_handler(func=lambda msg: msg.text in ["📱 Get Number", "📱 Get Free Number", "📱 NUMBER'S"])
 def numbers_cmd(message):
     if not is_user_joined(message.from_user.id):
@@ -437,7 +435,6 @@ def buy_number_click(call):
     _, s_code, c_code, service_name = call.data.split("_")
     user_id = call.from_user.id
 
-    # Call VoltXSMS Live API
     success, order_id_or_err, phone_num = voltx_get_number(s_code, c_code)
 
     if not success:
@@ -494,7 +491,6 @@ def check_otp_cb(call):
             )
             return
 
-        # Check API status on button click
         status_res, code = voltx_check_sms(order_id)
         if status_res == "RECEIVED" and code:
             bot.answer_callback_query(call.id, "✅ OTP পাওয়া গেছে!", show_alert=True)
@@ -513,7 +509,7 @@ def dummy_copy_cb(call):
 
 @bot.message_handler(func=lambda msg: msg.text == "🚥 LIVE TRAFFIC")
 def live_traffic_cmd(message):
-    bot.send_message(message.chat.id, "📊 <b>LIVE TRAFFIC</b>\n━━━━━━━━━━━━━━━━━━\n🌐 <b>VoltXSMS Engine:</b> Connected\nOTP Monitoring Running 24/7 Auto Polling...")
+    bot.send_message(message.chat.id, "📊 <b>LIVE TRAFFIC</b>\n━━━━━━━━━━━━━━━━━━\n🌐 <b>SMS Engine:</b> Connected\nOTP Monitoring Running 24/7 Auto Polling...")
 
 # ----------------- 🛍️ WEB SHOP SYSTEM -----------------
 @bot.message_handler(func=lambda msg: msg.text == "🛍️ Web Shop")
@@ -737,7 +733,7 @@ def dep_method_cb(call):
         set_user_state(user_id, "dep_num", num)
         set_user_state(user_id, "step", "await_dep_amt")
         
-        header_badge = "🌸 <b>[ bKash Personal Payment ]</b>" if method == "bkash" else ("🟠 <b>[ Nagad Personal Payment ]</b>" if method == "nagad" else "🟡 <b>[ Binance USDT Payment ]</b>")
+        header_badge = "💸 <b>[ bKash Personal Payment ]</b>" if method == "bkash" else ("💸 <b>[ Nagad Personal Payment ]</b>" if method == "nagad" else "💸 <b>[ Binance USDT Payment ]</b>")
         
         text = f"{header_badge}\n\nEnter deposit amount in BDT:\n<i>(Minimum: {min_dep} BDT)</i>"
         markup = types.InlineKeyboardMarkup()
@@ -764,14 +760,15 @@ def dep_paid_cb(call):
     markup.add(types.InlineKeyboardButton("❌ Cancel", callback_data="cancel_action"))
     bot.send_message(call.message.chat.id, text, reply_markup=markup)
 
+# FIXED LINK TO DONGVANFB READ MAIL BOX DIRECTLY
 @bot.message_handler(func=lambda msg: msg.text == "🔑 Get Code")
 def get_code_cmd(message):
-    text = "🔑 <b>Get Code</b>\n\nSelect a link:"
+    text = "🔑 <b>Get Code</b>\n\nSelect a link to open mailbox reader:"
     markup = types.InlineKeyboardMarkup(row_width=1)
     markup.add(
-        types.InlineKeyboardButton("🔗 Hotmail/Outlook ↗", url="https://dongvanfb.net"),
-        types.InlineKeyboardButton("🔗 Fr Outlook Code ↗", url="https://dongvanfb.net"),
-        types.InlineKeyboardButton("🔗 API Gmail Code ↗", url="https://dongvanfb.net")
+        types.InlineKeyboardButton("🔗 Hotmail/Outlook ↗", url="https://dongvanfb.net/read_mail_box/"),
+        types.InlineKeyboardButton("🔗 Fr Outlook Code ↗", url="https://dongvanfb.net/read_mail_box/"),
+        types.InlineKeyboardButton("🔗 API Gmail Code ↗", url="https://dongvanfb.net/read_mail_box/")
     )
     bot.send_message(message.chat.id, text, reply_markup=markup)
 
@@ -956,9 +953,7 @@ def admin_cb_handler(call):
             "🌐 <b>নতুন সার্ভিস / কান্ট্রি যোগ করার ফরম্যাট:</b>\n\n"
             "<code>SERVICE_NAME,SERVICE_CODE,COUNTRY_NAME,FLAG,COUNTRY_CODE</code>\n\n"
             "উদাহরণ (Facebook - Uzbekistan):\n"
-            "<code>Facebook,fb,Uzbekistan,🇺🇿,uz</code>\n\n"
-            "উদাহরণ (Instagram - Bangladesh):\n"
-            "<code>Instagram,ig,Bangladesh,🇧🇩,bd</code>"
+            "<code>Facebook,fb,Uzbekistan,🇺🇿,uz</code>"
         )
 
     elif data == "adm_edit_balance":
@@ -1234,7 +1229,7 @@ def global_message_handler(message):
         return
 
 # ----------------- 🔄 24/7 AUTO-RECONNECT ENGINE -----------------
-print("🤖 VoltXSMS Automated OTP Bot Started Successfully & Running 24/7...")
+print("🤖 Automated SMS Bot Started Successfully & Running 24/7...")
 while True:
     try:
         bot.infinity_polling(timeout=20, long_polling_timeout=10)
