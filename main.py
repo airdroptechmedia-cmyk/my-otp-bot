@@ -372,7 +372,7 @@ def start_cmd(message):
                 cursor.execute("UPDATE users SET referrals = referrals + 1 WHERE user_id=?", (referred_by,))
             conn.commit()
 
-    bot.send_message(message.chat.id, "👋 <b>AUTOMATED OTP BOT</b>-এ আপনাকে স্বাগতম!", reply_markup=main_reply_keyboard(user_id))
+    bot.send_message(message.chat.id, "👋 <b>OTP RECIVER PRO BOT</b>-এ আপনাকে স্বাগতম!", reply_markup=main_reply_keyboard(user_id))
 
 # ----------------- 📱 AUTOMATED NUMBER GETTER -----------------
 @bot.message_handler(func=lambda msg: msg.text in ["📱 Get Number", "📱 Get Free Number", "📱 NUMBER'S"])
