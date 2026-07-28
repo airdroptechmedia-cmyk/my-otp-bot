@@ -15,7 +15,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Automated SMS Bot is Alive 24/7!"
+    return "OTP RECIVER PRO BOT is Alive 24/7!"
 
 def run_flask():
     try:
@@ -40,6 +40,7 @@ threading.Thread(target=self_ping, daemon=True).start()
 # ==================== CONFIGURATION ====================
 BOT_TOKEN = "8842802759:AAFTzG_yyzHiirBiW2Canl2l0t_sG2HxKt8" # আপনার বটের টোকেন
 ADMIN_ID = 8125384914                                       # আপনার Admin ID
+BOT_NAME = "OTP RECIVER PRO BOT"
 DB_NAME = "fresh_master_shop.db"
 # =======================================================
 
@@ -127,13 +128,20 @@ def init_db():
             price REAL DEFAULT 0.00
         )''')
         
-        # Products Table (Web Shop)
+        # Products Table (Web Shop with Subcategory / Duration)
         cursor.execute('''CREATE TABLE IF NOT EXISTS products (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             category TEXT,
+            subcategory TEXT DEFAULT '',
             name TEXT,
             price REAL
         )''')
+        
+        # Add subcategory column if missing (Migration Safety)
+        try:
+            cursor.execute("ALTER TABLE products ADD COLUMN subcategory TEXT DEFAULT ''")
+        except Exception:
+            pass
         
         # Inventory Stock Table
         cursor.execute('''CREATE TABLE IF NOT EXISTS item_stock (
@@ -159,11 +167,11 @@ def init_db():
             value TEXT
         )''')
         
-        # Default Settings
+        # Default Settings (Updated with requested Payment Info)
         defaults = {
-            'bkash_num': '01833878871',
-            'nagad_num': '01833878871',
-            'binance_uid': '87654321',
+            'bkash_num': '01625212609',
+            'nagad_num': '01625212609',
+            'binance_uid': '1133157464',
             'min_deposit': '20.0',
             'deposit_bonus': '5',
             'refer_reward': '0.11',
@@ -186,6 +194,11 @@ def init_db():
                 ('Telegram', 'tg', 'Uzbekistan', '🇺🇿', 'uz', 0.00)
             ]
             cursor.executemany("INSERT INTO countries (service_name, service_code, country_name, country_flag, country_code, price) VALUES (?, ?, ?, ?, ?, ?)", default_countries)
+
+        # Default Proxy Sample if empty
+        cursor.execute("SELECT COUNT(*) FROM products WHERE category='Proxy'")
+        if cursor.fetchone()[0] == 0:
+            cursor.execute("INSERT INTO products (category, subcategory, name, price) VALUES ('Proxy', '200 MB', 'Owl Proxy', 10.00)")
 
         conn.commit()
 
@@ -334,7 +347,7 @@ def check_join_verify_cb(call):
     if is_user_joined(call.from_user.id):
         bot.answer_callback_query(call.id, "🎉 ভেরিফিকেশন সফল হয়েছে!", show_alert=True)
         bot.delete_message(call.message.chat.id, call.message.message_id)
-        bot.send_message(call.message.chat.id, "👋 <b>স্বাগতম!</b> এখন আপনি বটের সকল সুবিধা উপভোগ করতে পারবেন।", reply_markup=main_reply_keyboard(call.from_user.id))
+        bot.send_message(call.message.chat.id, f"👋 <b>{BOT_NAME}</b>-এ আপনাকে স্বাগতম!", reply_markup=main_reply_keyboard(call.from_user.id))
     else:
         bot.answer_callback_query(call.id, "❌ আপনি এখনো সবগুলো চ্যানেলে জয়েন করেননি! আগে জয়েন করুন।", show_alert=True)
 
@@ -372,7 +385,7 @@ def start_cmd(message):
                 cursor.execute("UPDATE users SET referrals = referrals + 1 WHERE user_id=?", (referred_by,))
             conn.commit()
 
-    bot.send_message(message.chat.id, "👋 <b>OTP RECIVER PRO BOT</b>-এ আপনাকে স্বাগতম!", reply_markup=main_reply_keyboard(user_id))
+    bot.send_message(message.chat.id, f"👋 <b>{BOT_NAME}</b>-এ আপনাকে স্বাগতম!", reply_markup=main_reply_keyboard(user_id))
 
 # ----------------- 📱 AUTOMATED NUMBER GETTER -----------------
 @bot.message_handler(func=lambda msg: msg.text in ["📱 Get Number", "📱 Get Free Number", "📱 NUMBER'S"])
@@ -459,7 +472,7 @@ def buy_number_click(call):
         f"<i>(নম্বরে ক্লিক করলেই অটোমেটিক কপি হয়ে যাবে)</i>\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"⏳ <b>Waiting for OTP...</b>\n"
-        f"<i>ফেসবুক/সার্ভিস থেকে কোড পাঠানোর সাথে সাথে অটোমেটিক মেসেজ চলে আসবে!</i>"
+        f"<i>কোড পাঠানোর সাথে সাথে অটোমেটিক মেসেজ চলে আসবে!</i>"
     )
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(types.InlineKeyboardButton("🔄 Refresh / Check OTP", callback_data=f"check_otp_{db_order_id}"))
@@ -511,7 +524,7 @@ def dummy_copy_cb(call):
 def live_traffic_cmd(message):
     bot.send_message(message.chat.id, "📊 <b>LIVE TRAFFIC</b>\n━━━━━━━━━━━━━━━━━━\n🌐 <b>SMS Engine:</b> Connected\nOTP Monitoring Running 24/7 Auto Polling...")
 
-# ----------------- 🛍️ WEB SHOP SYSTEM -----------------
+# ----------------- 🛍️ WEB SHOP SYSTEM (VPN & PROXY SYSTEM UPDATED) -----------------
 @bot.message_handler(func=lambda msg: msg.text == "🛍️ Web Shop")
 def buy_products_cmd(message):
     if not is_user_joined(message.from_user.id):
@@ -532,26 +545,96 @@ def category_select_cb(call):
     bot.answer_callback_query(call.id)
     category = call.data.split("_")[1]
     
+    # 1. VPN Category Flow (Matches Screenshot 2)
+    if category == "VPN":
+        text = "🛡️ <b>VPN — Select Duration:</b>"
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            types.InlineKeyboardButton("🔐 3 Days", callback_data="vpndur_3 Days"),
+            types.InlineKeyboardButton("🔐 7 Days", callback_data="vpndur_7 Days")
+        )
+        markup.add(
+            types.InlineKeyboardButton("🔐 14 Days", callback_data="vpndur_14 Days"),
+            types.InlineKeyboardButton("🔐 30 Days", callback_data="vpndur_30 Days")
+        )
+        markup.add(types.InlineKeyboardButton("‹ Back", callback_data="back_to_shop"))
+        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup)
+        return
+
+    # 2. Proxy Category Flow (Matches Screenshot 1)
+    elif category == "Proxy":
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, name, price, subcategory FROM products WHERE category='Proxy'")
+            products = cursor.fetchall()
+            
+            if not products:
+                bot.answer_callback_query(call.id, "⚠️ প্রক্সি ক্যাটাগরিতে বর্তমানে কোনো প্ল্যান নেই!", show_alert=True)
+                return
+
+            text = "🌐 <b>Proxy — Select Plan:</b>"
+            markup = types.InlineKeyboardMarkup(row_width=1)
+            
+            for p in products:
+                p_id, p_name, p_price, p_sub = p
+                cursor.execute("SELECT COUNT(*) FROM item_stock WHERE product_id=? AND status='available'", (p_id,))
+                p_stock = cursor.fetchone()[0]
+                plan_info = f" ({p_sub})" if p_sub else ""
+                btn_text = f"🌐 {p_name} · {p_price:.2f} BDT/unit{plan_info}"
+                markup.add(types.InlineKeyboardButton(btn_text, callback_data=f"selectprod_{p_id}"))
+                
+            markup.add(types.InlineKeyboardButton("‹ Back", callback_data="back_to_shop"))
+            bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup)
+            return
+
+    # 3. Mail Category Flow
+    else:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, name, price FROM products WHERE category='Mail'")
+            products = cursor.fetchall()
+            
+            if not products:
+                bot.answer_callback_query(call.id, "⚠️ মেইল ক্যাটাগরিতে বর্তমানে কোনো প্রোডাক্ট নেই!", show_alert=True)
+                return
+
+            text = f"<b>Mail — Select Product:</b>"
+            markup = types.InlineKeyboardMarkup(row_width=1)
+            
+            for p in products:
+                p_id, p_name, p_price = p
+                cursor.execute("SELECT COUNT(*) FROM item_stock WHERE product_id=? AND status='available'", (p_id,))
+                p_stock = cursor.fetchone()[0]
+                btn_text = f"📧 {p_name} · {p_price:.2f} BDT · {p_stock} in stock"
+                markup.add(types.InlineKeyboardButton(btn_text, callback_data=f"selectprod_{p_id}"))
+                
+        markup.add(types.InlineKeyboardButton("‹ Back", callback_data="back_to_shop"))
+        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("vpndur_"))
+def vpn_duration_select_cb(call):
+    bot.answer_callback_query(call.id)
+    duration = call.data.split("_")[1]
+    
     with get_db() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT id, name, price FROM products WHERE category=?", (category,))
+        cursor.execute("SELECT id, name, price FROM products WHERE category='VPN' AND subcategory=?", (duration,))
         products = cursor.fetchall()
         
         if not products:
-            bot.answer_callback_query(call.id, "⚠️ এই ক্যাটাগরিতে বর্তমানে কোনো প্রডাক্ট নেই!", show_alert=True)
+            bot.answer_callback_query(call.id, f"⚠️ {duration} এর জন্য বর্তমানে কোনো VPN নেই!", show_alert=True)
             return
 
-        text = f"<b>{category} — Select Product:</b>"
+        text = f"🛡️ <b>VPN — {duration} Packages:</b>"
         markup = types.InlineKeyboardMarkup(row_width=1)
-        
         for p in products:
             p_id, p_name, p_price = p
             cursor.execute("SELECT COUNT(*) FROM item_stock WHERE product_id=? AND status='available'", (p_id,))
             p_stock = cursor.fetchone()[0]
-            btn_text = f"📧 {p_name} · {p_price:.2f} BDT · {p_stock} in stock"
+            btn_text = f"🔐 {p_name} ({duration}) · {p_price:.2f} BDT · {p_stock} in stock"
             markup.add(types.InlineKeyboardButton(btn_text, callback_data=f"selectprod_{p_id}"))
             
-    markup.add(types.InlineKeyboardButton("‹ Back", callback_data="back_to_shop"))
+    markup.add(types.InlineKeyboardButton("‹ Back", callback_data="cat_VPN"))
     bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data == "back_to_shop")
@@ -574,22 +657,23 @@ def select_prod_cb(call):
     
     with get_db() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT name, price FROM products WHERE id=?", (p_id,))
+        cursor.execute("SELECT name, price, category, subcategory FROM products WHERE id=?", (p_id,))
         prod = cursor.fetchone()
         
         if not prod:
             return
             
-        p_name, p_price = prod
+        p_name, p_price, p_cat, p_sub = prod
         cursor.execute("SELECT COUNT(*) FROM item_stock WHERE product_id=? AND status='available'", (p_id,))
         p_stock = cursor.fetchone()[0]
     
     set_user_state(user_id, "buying_p_id", str(p_id))
     set_user_state(user_id, "step", "await_qty")
     
+    sub_info = f" ({p_sub})" if p_sub else ""
     text = (
-        f"📧 <b>{p_name}</b>\n"
-        f"⚡ <b>{p_price:.2f} BDT / piece</b>\n"
+        f"📦 <b>{p_name}{sub_info}</b>\n"
+        f"⚡ <b>Price: {p_price:.2f} BDT / piece</b>\n"
         f"⚡ <b>Available: {p_stock}</b>\n\n"
         f"Enter quantity:"
     )
@@ -613,13 +697,13 @@ def confirm_order_cb(call):
     
     with get_db() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT name, price FROM products WHERE id=?", (p_id,))
+        cursor.execute("SELECT name, price, category, subcategory FROM products WHERE id=?", (p_id,))
         prod = cursor.fetchone()
         if not prod:
             bot.edit_message_text("❌ প্রোডাক্টটি পাওয়া যায়নি!", call.message.chat.id, call.message.message_id)
             return
             
-        p_name, p_price = prod
+        p_name, p_price, p_cat, p_sub = prod
         total_bdt = qty * p_price
         
         cursor.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
@@ -652,17 +736,47 @@ def confirm_order_cb(call):
         cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id=?", (total_bdt, user_id))
         conn.commit()
     
-    excel_file = create_excel_document(p_name, delivered_lines)
-    
-    delivery_text = (
-        f"✅ <b>Mail Delivered!</b>\n\n"
-        f"📧 <b>{qty}x {p_name}</b>\n"
-        f"💰 <b>Paid : {total_bdt:.2f} BDT</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━\n"
-        f"📱 <b>File below ↓</b>"
-    )
-    bot.edit_message_text(delivery_text, call.message.chat.id, call.message.message_id)
-    bot.send_document(call.message.chat.id, excel_file)
+    # Custom Delivery Message for PROXY (Address, Port, User, Pass in Tap-to-Copy format)
+    if p_cat == "Proxy":
+        formatted_proxies = []
+        for idx, line in enumerate(delivered_lines, 1):
+            parts = line.split(":")
+            if len(parts) == 4:
+                ip, port, usr, pwd = parts
+                formatted_proxies.append(
+                    f"🌐 <b>Proxy #{idx}</b>\n"
+                    f"📍 Address: <code>{ip}</code>\n"
+                    f"🔌 Port: <code>{port}</code>\n"
+                    f"👤 Username: <code>{usr}</code>\n"
+                    f"🔑 Password: <code>{pwd}</code>\n"
+                    f"🔗 Full Format: <code>{line}</code>"
+                )
+            else:
+                formatted_proxies.append(f"🌐 <b>Proxy #{idx}:</b> <code>{line}</code>")
+        
+        proxy_msg_text = (
+            f"✅ <b>Proxy Order Delivered!</b>\n\n"
+            f"🌐 <b>{qty}x {p_name} ({p_sub})</b>\n"
+            f"💰 <b>Paid : {total_bdt:.2f} BDT</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━\n" +
+            "\n\n".join(formatted_proxies) +
+            "\n\n<i>(যেকোনো তথ্যের ওপর টাচ করলেই অটোমেটিক কপি হয়ে যাবে!)</i>"
+        )
+        bot.edit_message_text(proxy_msg_text, call.message.chat.id, call.message.message_id)
+
+    # Delivery Message for VPN / MAIL (File + Text Message)
+    else:
+        excel_file = create_excel_document(p_name, delivered_lines)
+        
+        delivery_text = (
+            f"✅ <b>Order Delivered!</b>\n\n"
+            f"📦 <b>{qty}x {p_name} {f'({p_sub})' if p_sub else ''}</b>\n"
+            f"💰 <b>Paid : {total_bdt:.2f} BDT</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"📱 <b>Accounts Excel File Attached Below ↓</b>"
+        )
+        bot.edit_message_text(delivery_text, call.message.chat.id, call.message.message_id)
+        bot.send_document(call.message.chat.id, excel_file)
 
 # ----------------- 👤 PROFILE & REFERRAL SYSTEM -----------------
 @bot.message_handler(func=lambda msg: msg.text == "👤 My Profile")
@@ -697,7 +811,7 @@ def profile_cmd(message):
     )
     bot.send_message(message.chat.id, text)
 
-# ----------------- 💳 DEPOSIT SYSTEM -----------------
+# ----------------- 💳 DEPOSIT SYSTEM (UPDATED WITH 💸 LOGO & NUMBERS) -----------------
 @bot.message_handler(func=lambda msg: msg.text == "💳 Deposit")
 def deposit_cmd(message):
     if not is_user_joined(message.from_user.id):
@@ -752,7 +866,7 @@ def dep_paid_cb(call):
     
     text = (
         f"🚩 <b>Enter Transaction ID (TrxID)</b>\n\n"
-        f"Amount: <b>{float(amt):.2f} BDT</b> via <b>{method.upper()}</b>\n\n"
+        f"Amount: <b>{float(amt):.2f} BDT</b> via <b>💸 {method.upper()}</b>\n\n"
         f"Send the TrxID from your payment SMS below:\n"
         f"<i>(উদাহরণ: DF27TNVV17)</i>"
     )
@@ -760,7 +874,7 @@ def dep_paid_cb(call):
     markup.add(types.InlineKeyboardButton("❌ Cancel", callback_data="cancel_action"))
     bot.send_message(call.message.chat.id, text, reply_markup=markup)
 
-# FIXED LINK TO DONGVANFB READ MAIL BOX DIRECTLY
+# DIRECT DONGVANFB MAILBOX READER LINK
 @bot.message_handler(func=lambda msg: msg.text == "🔑 Get Code")
 def get_code_cmd(message):
     text = "🔑 <b>Get Code</b>\n\nSelect a link to open mailbox reader:"
@@ -794,7 +908,7 @@ def admin_panel_cmd(message):
     )
     markup.add(
         types.InlineKeyboardButton("📢 Force Join Channels", callback_data="adm_edit_force_join"),
-        types.InlineKeyboardButton("⚙️ Edit Payment Numbers", callback_data="adm_edit_payments")
+        types.InlineKeyboardButton("💸 Edit Payment Numbers", callback_data="adm_edit_payments")
     )
     markup.add(
         types.InlineKeyboardButton("👀 Pending Deposits", callback_data="adm_view_pending_dep"),
@@ -822,7 +936,7 @@ def admin_cb_handler(call):
     if data == "adm_edit_apikey":
         curr_key = get_setting('number_api_key')
         set_user_state(user_id, "adm_step", "set_setting:number_api_key")
-        bot.send_message(call.message.chat.id, f"🔑 <b>বর্তমান VoltXSMS API Key:</b>\n<code>{curr_key}</code>\n\nনতুন API Key লিখে মেসেজ দিন:")
+        bot.send_message(call.message.chat.id, f"🔑 <b>বর্তমান API Key:</b>\n<code>{curr_key}</code>\n\nনতুন API Key লিখে মেসেজ দিন:")
 
     elif data == "adm_edit_apiurl":
         curr_url = get_setting('api_base_url')
@@ -862,7 +976,29 @@ def admin_cb_handler(call):
         cat = data.split("_")[1]
         set_user_state(user_id, "adm_add_cat", cat)
         set_user_state(user_id, "adm_step", "add_prod_info")
-        bot.send_message(call.message.chat.id, f"<b>{cat} Stock:</b>\n\nপ্রোডাক্টের নাম এবং প্রতি পিসের দাম লিখুন:\n\n<code>প্রোডাক্টের নাম, দাম</code>")
+        
+        if cat == "VPN":
+            instruct = (
+                "🛡️ <b>VPN Product Setup:</b>\n\n"
+                "নিচের ফরম্যাটে লিখুন:\n"
+                "<code>মেয়াদ (3 Days / 7 Days / 14 Days / 30 Days), নাম, দাম</code>\n\n"
+                "উদাহরণ:\n<code>3 Days, ExpressVPN, 25.00</code>"
+            )
+        elif cat == "Proxy":
+            instruct = (
+                "🌐 <b>Proxy Product Setup:</b>\n\n"
+                "নিচের ফরম্যাটে লিখুন:\n"
+                "<code>প্ল্যান/MB, নাম, দাম</code>\n\n"
+                "উদাহরণ:\n<code>200 MB, Owl Proxy, 10.00</code>"
+            )
+        else:
+            instruct = (
+                "📧 <b>Mail Product Setup:</b>\n\n"
+                "নিচের ফরম্যাটে লিখুন:\n"
+                "<code>নাম, দাম</code>\n\n"
+                "উদাহরণ:\n<code>Fr Outlook, 0.80</code>"
+            )
+        bot.send_message(call.message.chat.id, instruct)
 
     elif data == "adm_view_pending_dep":
         with get_db() as conn:
@@ -952,7 +1088,7 @@ def admin_cb_handler(call):
             call.message.chat.id,
             "🌐 <b>নতুন সার্ভিস / কান্ট্রি যোগ করার ফরম্যাট:</b>\n\n"
             "<code>SERVICE_NAME,SERVICE_CODE,COUNTRY_NAME,FLAG,COUNTRY_CODE</code>\n\n"
-            "উদাহরণ (Facebook - Uzbekistan):\n"
+            "উদাহরণ:\n"
             "<code>Facebook,fb,Uzbekistan,🇺🇿,uz</code>"
         )
 
@@ -1007,20 +1143,31 @@ def global_message_handler(message):
             elif adm_step == "add_prod_info":
                 try:
                     parts = txt.split(",")
-                    p_name = parts[0].strip()
-                    p_price = float(parts[1].strip())
                     cat = get_user_state(user_id, "adm_add_cat", "Mail")
+                    
+                    if cat == "VPN":
+                        p_sub = parts[0].strip() # Duration: 3 Days, 7 Days, etc.
+                        p_name = parts[1].strip()
+                        p_price = float(parts[2].strip())
+                    elif cat == "Proxy":
+                        p_sub = parts[0].strip() # Plan: 200 MB, etc.
+                        p_name = parts[1].strip()
+                        p_price = float(parts[2].strip())
+                    else:
+                        p_sub = ""
+                        p_name = parts[0].strip()
+                        p_price = float(parts[1].strip())
                     
                     with get_db() as conn:
                         cursor = conn.cursor()
-                        cursor.execute("SELECT id FROM products WHERE category=? AND name=?", (cat, p_name))
+                        cursor.execute("SELECT id FROM products WHERE category=? AND name=? AND subcategory=?", (cat, p_name, p_sub))
                         res = cursor.fetchone()
                         
                         if res:
                             p_id = res[0]
                             cursor.execute("UPDATE products SET price=? WHERE id=?", (p_price, p_id))
                         else:
-                            cursor.execute("INSERT INTO products (category, name, price) VALUES (?, ?, ?)", (cat, p_name, p_price))
+                            cursor.execute("INSERT INTO products (category, subcategory, name, price) VALUES (?, ?, ?, ?)", (cat, p_sub, p_name, p_price))
                             p_id = cursor.lastrowid
                         conn.commit()
                     
@@ -1028,9 +1175,14 @@ def global_message_handler(message):
                     set_user_state(user_id, "active_pname", p_name)
                     set_user_state(user_id, "adm_step", "await_stock_items")
                     
-                    bot.send_message(message.chat.id, f"✅ <b>{p_name} ({p_price:.2f} BDT)</b> সিলেক্ট হয়েছে!\n\nএখন ফাইল বা টেক্সট পাঠিয়ে স্টক দিন:")
+                    if cat == "Proxy":
+                        instruct_stock = "🌐 <b>প্রক্সি আইটেমগুলোর তালিকা নিচে লিখুন বা ফাইল পাঠান:</b>\n\n<code>Address:Port:Username:Password</code>\n\nউদাহরণ:\n<code>192.168.1.1:8080:user123:pass123</code>"
+                    else:
+                        instruct_stock = f"✅ <b>{p_name} ({p_price:.2f} BDT)</b> সিলেক্ট হয়েছে!\n\nএখন অ্যাকাউন্টগুলোর তালিকা টেক্সট বা ফাইল বা Excel পাঠিয়া স্টক দিন:"
+                        
+                    bot.send_message(message.chat.id, instruct_stock)
                 except Exception:
-                    bot.send_message(message.chat.id, "❌ ফরম্যাট ভুল হয়েছে। লিখুন: `প্রোডাক্টের নাম, দাম`")
+                    bot.send_message(message.chat.id, "❌ ফরম্যাট ভুল হয়েছে। সঠিকভাবে আবার লিখুন।")
                 return
 
             elif adm_step == "await_stock_items":
@@ -1065,7 +1217,7 @@ def global_message_handler(message):
                     lines = [line.strip() for line in txt.split("\n") if line.strip()]
 
                 if not lines:
-                    bot.send_message(message.chat.id, "⚠️ কোনো অ্যাকাউন্ট পাওয়া যায়নি!")
+                    bot.send_message(message.chat.id, "⚠️ কোনো অ্যাকাউন্ট/প্রক্সি পাওয়া যায়নি!")
                     return
                 
                 with get_db() as conn:
@@ -1122,9 +1274,9 @@ def global_message_handler(message):
             
             with get_db() as conn:
                 cursor = conn.cursor()
-                cursor.execute("SELECT name, price FROM products WHERE id=?", (p_id,))
+                cursor.execute("SELECT name, price, subcategory FROM products WHERE id=?", (p_id,))
                 prod = cursor.fetchone()
-                p_name, p_price = prod[0], prod[1]
+                p_name, p_price, p_sub = prod[0], prod[1], prod[2]
                 
                 cursor.execute("SELECT COUNT(*) FROM item_stock WHERE product_id=? AND status='available'", (p_id,))
                 p_stock = cursor.fetchone()[0]
@@ -1141,9 +1293,10 @@ def global_message_handler(message):
             
             clear_user_state(user_id)
             
+            sub_info = f" ({p_sub})" if p_sub else ""
             text = (
                 f"📬 <b>Order Summary</b>\n\n"
-                f"⚡ <b>Category :</b> {p_name}\n"
+                f"⚡ <b>Item     :</b> {p_name}{sub_info}\n"
                 f"👥 <b>Quantity :</b> {qty}\n"
                 f"💰 <b>Total    :</b> {total_bdt:.2f} BDT / {total_usdt:.4f} USDT\n"
                 f"💳 <b>Balance  :</b> {bal:.2f} BDT"
@@ -1211,7 +1364,7 @@ def global_message_handler(message):
                 f"📥 <b>NEW DEPOSIT REQUEST!</b>\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
                 f"👤 <b>User ID:</b> <code>{user_id}</code>\n"
-                f"💳 <b>Method:</b> {method.upper()}\n"
+                f"💳 <b>Method:</b> 💸 {method.upper()}\n"
                 f"💵 <b>Amount:</b> {amt} BDT (+{dep_bonus_pct}% Bonus = <b>{final_amt:.2f} BDT</b>)\n"
                 f"🏷️ <b>TrxID:</b> <code>{trx_id}</code>"
             )
@@ -1229,7 +1382,7 @@ def global_message_handler(message):
         return
 
 # ----------------- 🔄 24/7 AUTO-RECONNECT ENGINE -----------------
-print("🤖 Automated SMS Bot Started Successfully & Running 24/7...")
+print(f"🤖 {BOT_NAME} Started Successfully & Running 24/7...")
 while True:
     try:
         bot.infinity_polling(timeout=20, long_polling_timeout=10)
