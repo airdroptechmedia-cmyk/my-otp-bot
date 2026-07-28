@@ -1,3 +1,4 @@
+import os
 import sqlite3
 import telebot
 import time
@@ -69,6 +70,36 @@ def get_db():
     finally:
         conn.close()
 
+# ----------------- TELEGRAM CLOUD AUTO-BACKUP & RESTORE ENGINE -----------------
+def backup_db_to_telegram():
+    """Uploads SQLite DB to Admin Telegram Chat as Cloud Backup"""
+    try:
+        if os.path.exists(DB_NAME):
+            with open(DB_NAME, 'rb') as f:
+                bot.send_document(ADMIN_ID, f, caption="#DB_BACKUP ☁️ Auto Data Backup")
+    except Exception as e:
+        print(f"Cloud Backup Error: {e}")
+
+def restore_db_from_telegram():
+    """Restores SQLite DB from latest Telegram Backup on Render Startup"""
+    try:
+        updates = bot.get_updates(limit=50)
+        for update in reversed(updates):
+            msg = update.message
+            if msg and msg.caption and "#DB_BACKUP" in msg.caption and msg.document:
+                file_info = bot.get_file(msg.document.file_id)
+                downloaded = bot.download_file(file_info.file_path)
+                with open(DB_NAME, 'wb') as f:
+                    f.write(downloaded)
+                print("🎉 DATABASE RESTORED SUCCESSFULLY FROM TELEGRAM CLOUD!")
+                return True
+    except Exception as e:
+        print(f"Restore DB Exception: {e}")
+    return False
+
+# Attempt restoring cloud backup BEFORE local db init
+restore_db_from_telegram()
+
 # Helper function to generate Excel File (.xlsx)
 def create_excel_document(product_name, lines):
     wb = openpyxl.Workbook()
@@ -129,6 +160,17 @@ def init_db():
             date TEXT DEFAULT CURRENT_DATE
         )''')
         
+        # Withdrawals Request Table
+        cursor.execute('''CREATE TABLE IF NOT EXISTS withdrawals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            amount REAL,
+            method TEXT,
+            account_number TEXT,
+            status TEXT DEFAULT 'pending',
+            date TEXT DEFAULT CURRENT_DATE
+        )''')
+        
         # Dynamic Countries / Services Table
         cursor.execute('''CREATE TABLE IF NOT EXISTS countries (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -173,14 +215,16 @@ def init_db():
             value TEXT
         )''')
         
-        # Default Settings (Updated OTP Group Link to https://t.me/otpreciverpro)
+        # Default Settings
         defaults = {
             'bkash_num': '01625212609',
             'nagad_num': '01625212609',
             'binance_uid': '1133157464',
             'min_deposit': '20.0',
+            'min_withdraw': '50.0',
             'deposit_bonus': '5',
             'refer_reward': '0.11',
+            'otp_reward': '0.10',
             'number_api_key': 'M9NA8XX44CT',
             'api_base_url': 'https://api.2oo9.cloud/MXS47FLFX0U/tnevs/@public/api',
             'getnum_url': 'https://api.2oo9.cloud/MXS47FLFX0U/tnevs/@public/api/getnum',
@@ -219,6 +263,7 @@ def set_setting(key, value):
         cursor = conn.cursor()
         cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, str(value)))
         conn.commit()
+    backup_db_to_telegram()
 
 # ----------------- STRICT FORCE JOIN CHECKER -----------------
 def is_user_joined(user_id):
@@ -236,7 +281,7 @@ def is_user_joined(user_id):
             if member.status not in ['creator', 'administrator', 'member']:
                 return False
         except Exception:
-            pass # If bot is not admin in channel, pass to avoid locking
+            pass
     return True
 
 def send_force_join_msg(chat_id):
@@ -299,38 +344,49 @@ def voltx_get_number(range_id):
     except Exception as e:
         return False, f"⚠️ সংযোগ বিচ্ছিন্ন: {e}", None
 
-def voltx_check_sms(phone_or_order_id):
+def voltx_check_sms(phone_num, order_id):
     api_key = get_setting('number_api_key')
-    url = get_setting('getmsg_url') or "https://api.2oo9.cloud/MXS47FLFX0U/tnevs/@public/api/success-otp"
+    base_url = get_setting('api_base_url') or "https://api.2oo9.cloud/MXS47FLFX0U/tnevs/@public/api"
     
     headers = {
         "mauthapi": api_key,
         "Content-Type": "application/json"
     }
-    try:
-        r = requests.get(url, headers=headers, timeout=8)
-        res = r.json()
-        
-        if res.get("meta", {}).get("code") == 200 and res.get("data"):
-            items = res.get("data")
-            if isinstance(items, list):
-                for item in items:
-                    item_num = str(item.get("full_number", "")) or str(item.get("number", ""))
-                    if str(phone_or_order_id) in item_num:
-                        code = item.get("code") or item.get("sms") or item.get("otp")
-                        if code:
-                            return "RECEIVED", str(code)
-            elif isinstance(items, dict):
-                code = items.get("code") or items.get("sms")
-                if code:
-                    return "RECEIVED", str(code)
-        return "WAITING", None
-    except Exception:
-        return "WAITING", None
+    
+    clean_phone = str(phone_num).replace("+", "").strip()
+    
+    urls_to_try = [
+        f"{base_url.rstrip('/')}/success-otp?number={clean_phone}",
+        f"{base_url.rstrip('/')}/success-otp?id={order_id}",
+        get_setting('getmsg_url') or f"{base_url.rstrip('/')}/success-otp"
+    ]
+    
+    for url in urls_to_try:
+        try:
+            r = requests.get(url, headers=headers, timeout=6)
+            res = r.json()
+            
+            if res.get("meta", {}).get("code") == 200 and res.get("data"):
+                items = res.get("data")
+                if isinstance(items, list):
+                    for item in items:
+                        item_num = str(item.get("full_number", "")) or str(item.get("number", "")) or str(item.get("no_plus_number", ""))
+                        if clean_phone in item_num or str(order_id) in item_num:
+                            code = item.get("code") or item.get("sms") or item.get("otp")
+                            if code:
+                                return "RECEIVED", str(code)
+                elif isinstance(items, dict):
+                    code = items.get("code") or items.get("sms") or items.get("otp")
+                    if code:
+                        return "RECEIVED", str(code)
+        except Exception:
+            pass
+            
+    return "WAITING", None
 
-# ----------------- 🔄 AUTO OTP POLLING & GROUP BROADCAST THREAD -----------------
+# ----------------- 🔄 AUTO OTP POLLING & CLOUD SYNC THREAD -----------------
 def auto_otp_checker_loop():
-    print("🚀 Auto OTP Checker & Group Broadcaster Thread Started...")
+    print("🚀 Auto OTP Checker, Reward & Group Broadcaster Started...")
     while True:
         try:
             with get_db() as conn:
@@ -340,24 +396,34 @@ def auto_otp_checker_loop():
 
             for order in active_orders:
                 db_id, user_id, order_id, phone_num, service_name, c_code = order
-                status, otp_code = voltx_check_sms(phone_num)
+                status, otp_code = voltx_check_sms(phone_num, order_id)
 
                 if status == "RECEIVED" and otp_code:
+                    otp_reward_val = float(get_setting('otp_reward') or 0.10)
+                    
                     with get_db() as conn:
                         cursor = conn.cursor()
                         cursor.execute("UPDATE active_orders SET status='COMPLETED', last_code=? WHERE id=?", (otp_code, db_id))
-                        cursor.execute("UPDATE users SET otp_count = otp_count + 1 WHERE user_id=?", (user_id,))
+                        cursor.execute("UPDATE users SET balance = balance + ?, otp_count = otp_count + 1 WHERE user_id=?", (otp_reward_val, user_id))
+                        cursor.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
+                        new_bal = cursor.fetchone()[0]
                         
-                        # Get flag info
                         cursor.execute("SELECT country_flag FROM countries WHERE service_name=? AND country_code=? LIMIT 1", (service_name, c_code))
                         flag_row = cursor.fetchone()
                         c_flag = flag_row[0] if flag_row else "🇺🇿"
                         conn.commit()
 
-                    # 1. Send Direct User Message (Matching Screenshot 7 Format)
+                    backup_db_to_telegram() # Auto Cloud Sync
+
+                    # 1. Send Direct User Notification
                     user_text = (
-                        f"{c_flag} <code>{phone_num}</code>\n"
-                        f"📘 <code>{otp_code}</code>\n\n"
+                        f"🎉 <b>NEW OTP RECEIVED!</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━\n"
+                        f"{c_flag} <b>Number:</b> <code>{phone_num}</code>\n"
+                        f"📘 <b>OTP Code:</b> <code>{otp_code}</code>\n"
+                        f"━━━━━━━━━━━━━━━━━━━\n"
+                        f"🎁 <b>OTP Reward Credited: +{otp_reward_val:.2f} BDT</b>\n"
+                        f"💰 <b>Your New Balance: {new_bal:.2f} BDT</b>\n\n"
                         f"👉 <i>(কোডের ওপর টাচ করলেই অটোমেটিক কপি হয়ে যাবে!)</i>"
                     )
                     try:
@@ -365,7 +431,7 @@ def auto_otp_checker_loop():
                     except Exception:
                         pass
 
-                    # 2. Automatically Broadcast Live OTP to Telegram Group (https://t.me/otpreciverpro)
+                    # 2. Automatically Broadcast Live OTP to Group
                     otp_group = get_setting('otp_group_id') or "@otpreciverpro"
                     group_text = (
                         f"🔔 <b>LIVE OTP TRAFFIC!</b>\n"
@@ -399,8 +465,8 @@ def main_reply_keyboard(user_id):
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(types.KeyboardButton("📱 Get Free Number"), types.KeyboardButton("🛍️ Web Shop"))
     markup.add(types.KeyboardButton("👤 My Profile"), types.KeyboardButton("💳 Deposit"))
-    markup.add(types.KeyboardButton("🔑 Get Code"), types.KeyboardButton("🚥 LIVE TRAFFIC"))
-    markup.add(types.KeyboardButton("🎧 Support"))
+    markup.add(types.KeyboardButton("💸 Withdraw"), types.KeyboardButton("🔑 Get Code"))
+    markup.add(types.KeyboardButton("🚥 LIVE TRAFFIC"), types.KeyboardButton("🎧 Support"))
     if user_id == ADMIN_ID:
         markup.add(types.KeyboardButton("👑 Admin Panel"))
     return markup
@@ -427,10 +493,11 @@ def start_cmd(message):
             if referred_by:
                 cursor.execute("UPDATE users SET referrals = referrals + 1 WHERE user_id=?", (referred_by,))
             conn.commit()
+            backup_db_to_telegram()
 
     bot.send_message(message.chat.id, f"👋 <b>{BOT_NAME}</b>-এ আপনাকে স্বাগতম!", reply_markup=main_reply_keyboard(user_id))
 
-# ----------------- 📱 AUTOMATED BATCH NUMBER GETTER (SCREENSHOT 7, 8, 9 MATCHED) -----------------
+# ----------------- 📱 AUTOMATED BATCH NUMBER GETTER -----------------
 @bot.message_handler(func=lambda msg: msg.text in ["📱 Get Number", "📱 Get Free Number", "📱 NUMBER'S"])
 def numbers_cmd(message):
     if not is_user_joined(message.from_user.id):
@@ -490,7 +557,6 @@ def back_to_services_cb(call):
 
     bot.edit_message_text("⚙️ <b>Select a Service:</b>", call.message.chat.id, call.message.message_id, reply_markup=markup)
 
-# ----------------- 4 NUMBERS BATCH & IN-PLACE EDIT HANDLER -----------------
 @bot.callback_query_handler(func=lambda call: call.data.startswith("buy_"))
 def buy_number_click(call):
     if not is_user_joined(call.from_user.id):
@@ -511,7 +577,6 @@ def buy_number_click(call):
         c_flag = c_row[1] if c_row else "🇺🇿"
         c_price = c_row[2] if c_row else 0.00
 
-    # Fetch 4 Numbers Batch from API
     assigned_numbers = []
     for _ in range(4):
         success, order_id_or_err, phone_num = voltx_get_number(range_id)
@@ -529,7 +594,6 @@ def buy_number_click(call):
         bot.send_message(call.message.chat.id, f"❌ <b>নম্বর আনা সম্ভব হয়নি!</b>\n\nবর্তমানে নম্বর স্টকে নেই।")
         return
 
-    # MATCHES SCREENSHOT 7, 8, 9 EXACT FORMAT
     num_str_list = "\n".join([f"{c_flag} 📋 <code>{p}</code>" for p in assigned_numbers])
     otp_group_link = get_setting('otp_group_link') or 'https://t.me/otpreciverpro'
 
@@ -548,7 +612,6 @@ def buy_number_click(call):
         types.InlineKeyboardButton("🌐 Country", callback_data=f"usr_srv_{service_name}")
     )
 
-    # EDIT THE SAME MESSAGE IN-PLACE (Prevents multiple messages spam)
     try:
         bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup)
     except Exception:
@@ -778,6 +841,8 @@ def confirm_order_cb(call):
         )
         conn.commit()
 
+    backup_db_to_telegram()
+
     if p_cat == "Proxy":
         formatted_proxies = []
         for idx, line in enumerate(delivered_lines, 1):
@@ -923,6 +988,53 @@ def view_purchases_cb(call):
         )
         bot.send_message(call.message.chat.id, hist_text)
 
+# ----------------- 💸 WITHDRAWAL SYSTEM (BKASH, NAGAD, BINANCE) -----------------
+@bot.message_handler(func=lambda msg: msg.text in ["💸 Withdraw", "Withdraw"])
+def withdraw_cmd(message):
+    user_id = message.from_user.id
+    if not is_user_joined(user_id):
+        send_force_join_msg(message.chat.id)
+        return
+
+    min_w = float(get_setting('min_withdraw') or 50.0)
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
+        row = cursor.fetchone()
+        bal = row[0] if row else 0.0
+
+    if bal < min_w:
+        bot.send_message(
+            message.chat.id,
+            f"❌ <b>উইথড্র করার জন্য পর্যাপ্ত ব্যালেন্স নেই!</b>\n\n"
+            f"আপনার বর্তমান ব্যালেন্স: <b>{bal:.2f} BDT</b>\n"
+            f"সর্বনিম্ন উইথড্র: <b>{min_w:.2f} BDT</b>"
+        )
+        return
+
+    text = "💸 <b>Select Withdrawal Method:</b>"
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        types.InlineKeyboardButton("🌸 bKash", callback_data="w_method_bkash"),
+        types.InlineKeyboardButton("🟠 Nagad", callback_data="w_method_nagad")
+    )
+    markup.add(types.InlineKeyboardButton("🟡 Binance (USDT)", callback_data="w_method_binance"))
+    bot.send_message(message.chat.id, text, reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("w_method_"))
+def withdraw_method_cb(call):
+    bot.answer_callback_query(call.id)
+    method = call.data.split("_")[2].upper()
+    user_id = call.from_user.id
+
+    set_user_state(user_id, "w_method", method)
+    set_user_state(user_id, "step", "await_w_acc")
+
+    text = f"✏️ <b>Enter your {method} Account Number / Pay UID:</b>"
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("❌ Cancel", callback_data="cancel_action"))
+    bot.send_message(call.message.chat.id, text, reply_markup=markup)
+
 # ----------------- 💳 DEPOSIT SYSTEM -----------------
 @bot.message_handler(func=lambda msg: msg.text == "💳 Deposit")
 def deposit_cmd(message):
@@ -1023,6 +1135,10 @@ def admin_panel_cmd(message):
         types.InlineKeyboardButton("👀 Pending Deposits", callback_data="adm_view_pending_dep")
     )
     markup.add(
+        types.InlineKeyboardButton("📤 Pending Withdrawals", callback_data="adm_view_pending_w"),
+        types.InlineKeyboardButton("🎁 Edit Bonuses & Rewards", callback_data="adm_edit_bonuses")
+    )
+    markup.add(
         types.InlineKeyboardButton("🌐 Add Service/Country", callback_data="adm_add_country"),
         types.InlineKeyboardButton("🛍️ Add Shop Stock", callback_data="adm_add_shop_stock")
     )
@@ -1079,6 +1195,66 @@ def admin_cb_handler(call):
     elif data == "adm_back_main":
         admin_panel_cmd(call.message)
 
+    elif data == "adm_edit_bonuses":
+        ref = get_setting('refer_reward')
+        dep_b = get_setting('deposit_bonus')
+        otp_b = get_setting('otp_reward')
+        text = f"🎁 <b>Edit Bonuses & Rewards</b>\n\nRefer Reward: {ref} BDT\nDeposit Bonus: {dep_b}%\nOTP Reward: {otp_b} BDT"
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        markup.add(
+            types.InlineKeyboardButton("🎁 Change Refer Reward", callback_data="set_bonus_refer"),
+            types.InlineKeyboardButton("💵 Change Deposit Bonus %", callback_data="set_bonus_dep"),
+            types.InlineKeyboardButton("🎉 Change Per-OTP Reward", callback_data="set_bonus_otpreward")
+        )
+        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup)
+
+    elif data == "set_bonus_otpreward":
+        set_user_state(user_id, "adm_step", "set_setting:otp_reward")
+        bot.send_message(call.message.chat.id, "✏️ <b>প্রতি OTP তে ইউজারকে কত টাকা রিওয়ার্ড দিতে চান লিখে পাঠান (যেমন: 0.10):</b>")
+
+    elif data == "adm_view_pending_w":
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, user_id, amount, method, account_number FROM withdrawals WHERE status='pending'")
+            w_reqs = cursor.fetchall()
+        
+        if not w_reqs:
+            bot.send_message(call.message.chat.id, "✅ বর্তমানে কোনো পেন্ডিং উইথড্র রিকুয়েস্ট নেই।")
+            return
+            
+        for w in w_reqs:
+            w_id, u_id, amt, method, acc = w
+            t = f"📤 <b>Pending Withdrawal #{w_id}</b>\nUser: <code>{u_id}</code>\nMethod: <b>{method}</b>\nAccount: <code>{acc}</code>\nAmount: <b>{amt:.2f} BDT</b>"
+            m = types.InlineKeyboardMarkup(row_width=2)
+            m.add(
+                types.InlineKeyboardButton("✅ Approve", callback_data=f"adm_appr_w_{w_id}"),
+                types.InlineKeyboardButton("❌ Reject & Refund", callback_data=f"adm_rej_w_{w_id}")
+            )
+            bot.send_message(call.message.chat.id, t, reply_markup=m)
+
+    elif data.startswith("adm_appr_w_"):
+        w_id = data.split("_")[3]
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE withdrawals SET status='approved' WHERE id=?", (w_id,))
+            conn.commit()
+        backup_db_to_telegram()
+        bot.edit_message_text(f"✅ <b>Withdrawal #{w_id} Approved & Paid!</b>", call.message.chat.id, call.message.message_id)
+
+    elif data.startswith("adm_rej_w_"):
+        w_id = data.split("_")[3]
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT user_id, amount FROM withdrawals WHERE id=? AND status='pending'", (w_id,))
+            row = cursor.fetchone()
+            if row:
+                u_id, amt = row
+                cursor.execute("UPDATE withdrawals SET status='rejected' WHERE id=?", (w_id,))
+                cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (amt, u_id))
+                conn.commit()
+                backup_db_to_telegram()
+                bot.edit_message_text(f"❌ <b>Withdrawal #{w_id} Rejected & {amt:.2f} BDT Refunded to User!</b>", call.message.chat.id, call.message.message_id)
+
     elif data == "adm_edit_force_join":
         curr = get_setting('force_channels') or "None"
         set_user_state(user_id, "adm_step", "set_setting:force_channels")
@@ -1096,6 +1272,7 @@ def admin_cb_handler(call):
             cursor.execute("DELETE FROM products")
             cursor.execute("DELETE FROM item_stock")
             conn.commit()
+        backup_db_to_telegram()
         bot.send_message(call.message.chat.id, "🗑️ আগের সকল সার্ভিস ও ইনভেন্টরি ক্লিয়ার করা হয়েছে!")
 
     elif data == "adm_add_shop_stock":
@@ -1168,6 +1345,7 @@ def admin_cb_handler(call):
                 cursor.execute("UPDATE deposits SET status='approved' WHERE id=?", (dep_id,))
                 cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (amt, u_id))
                 conn.commit()
+                backup_db_to_telegram()
                 
                 bot.edit_message_text(f"✅ <b>Deposit Approved!</b> ({amt:.2f} BDT)", call.message.chat.id, call.message.message_id)
                 try:
@@ -1181,6 +1359,7 @@ def admin_cb_handler(call):
             cursor = conn.cursor()
             cursor.execute("UPDATE deposits SET status='rejected' WHERE id=?", (dep_id,))
             conn.commit()
+        backup_db_to_telegram()
         bot.edit_message_text("❌ <b>Deposit Rejected!</b>", call.message.chat.id, call.message.message_id)
 
     elif data == "adm_edit_payments":
@@ -1254,6 +1433,7 @@ def global_message_handler(message):
                         )
                         conn.commit()
                     
+                    backup_db_to_telegram()
                     clear_user_state(user_id)
                     bot.send_message(message.chat.id, f"✅ সফলভাবে <b>{flag} {c_name} ({srv_name})</b> সার্ভিস যোগ হয়েছে!")
                 except Exception:
@@ -1348,6 +1528,7 @@ def global_message_handler(message):
                         added_count += 1
                     conn.commit()
                 
+                backup_db_to_telegram()
                 clear_user_state(user_id)
                 bot.send_message(message.chat.id, f"🎉 সফলভাবে <b>{added_count} টি {p_name}</b> স্টকে যুক্ত হয়েছে!")
                 return
@@ -1363,6 +1544,7 @@ def global_message_handler(message):
                         cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (add_bal, target_id))
                         conn.commit()
                         
+                    backup_db_to_telegram()
                     clear_user_state(user_id)
                     bot.send_message(message.chat.id, f"✅ ইউজার <code>{target_id}</code> এর ব্যালেন্সে <b>{add_bal:.2f} BDT</b> যোগ করা হয়েছে!")
                 except Exception:
@@ -1387,7 +1569,67 @@ def global_message_handler(message):
 
     # User State Steps
     usr_step = get_user_state(user_id, "step")
-    if usr_step == "await_qty":
+    if usr_step == "await_w_acc":
+        acc_num = txt
+        method = get_user_state(user_id, "w_method")
+        
+        set_user_state(user_id, "w_acc_final", acc_num)
+        set_user_state(user_id, "step", "await_w_amt")
+        
+        bot.send_message(message.chat.id, f"💸 <b>Enter withdrawal amount in BDT for {method}:</b>")
+        return
+
+    elif usr_step == "await_w_amt":
+        try:
+            amt = float(txt)
+            min_w = float(get_setting('min_withdraw') or 50.0)
+            
+            with get_db() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
+                bal = cursor.fetchone()[0]
+                
+                if amt < min_w:
+                    bot.send_message(message.chat.id, f"❌ সর্বনিম্ন উইথড্র {min_w:.2f} BDT।")
+                    return
+                if bal < amt:
+                    bot.send_message(message.chat.id, f"❌ আপনার পর্যাপ্ত ব্যালেন্স নেই! (বর্তমান ব্যালেন্স: {bal:.2f} BDT)")
+                    return
+                    
+                method = get_user_state(user_id, "w_method")
+                acc = get_user_state(user_id, "w_acc_final")
+                
+                cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id=?", (amt, user_id))
+                cursor.execute("INSERT INTO withdrawals (user_id, amount, method, account_number) VALUES (?, ?, ?, ?)", (user_id, amt, method, acc))
+                w_id = cursor.lastrowid
+                conn.commit()
+
+            backup_db_to_telegram()
+            clear_user_state(user_id)
+            bot.send_message(message.chat.id, f"✅ <b>আপনার {amt:.2f} BDT উইথড্র রিকুয়েস্ট সফলভাবে সাবমিট হয়েছে!</b>\n\nএডমিন ভেরিফাই করে আপনার একাউন্টে টাকা পাঠিয়ে দিবে।")
+            
+            admin_text = (
+                f"📤 <b>NEW WITHDRAWAL REQUEST!</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"👤 <b>User ID:</b> <code>{user_id}</code>\n"
+                f"💳 <b>Method:</b> {method}\n"
+                f"📱 <b>Account:</b> <code>{acc}</code>\n"
+                f"💵 <b>Amount:</b> <b>{amt:.2f} BDT</b>"
+            )
+            markup = types.InlineKeyboardMarkup(row_width=2)
+            markup.add(
+                types.InlineKeyboardButton("✅ Approve", callback_data=f"adm_appr_w_{w_id}"),
+                types.InlineKeyboardButton("❌ Reject & Refund", callback_data=f"adm_rej_w_{w_id}")
+            )
+            try:
+                bot.send_message(ADMIN_ID, admin_text, reply_markup=markup)
+            except Exception:
+                pass
+        except Exception:
+            bot.send_message(message.chat.id, "❌ সঠিক সংখ্যা টাইপ করুন।")
+        return
+
+    elif usr_step == "await_qty":
         try:
             qty = int(txt)
             p_id = get_user_state(user_id, "buying_p_id")
@@ -1477,6 +1719,7 @@ def global_message_handler(message):
                 conn.commit()
                 dep_id = cursor.lastrowid
             
+            backup_db_to_telegram()
             clear_user_state(user_id)
             bot.send_message(message.chat.id, "✅ আপনার ডিপোজিট রিকুয়েস্ট সফলভাবে সাবমিট হয়েছে। এডমিন ভেরিফাই করে এপ্রুভ করে দেবে।")
             
