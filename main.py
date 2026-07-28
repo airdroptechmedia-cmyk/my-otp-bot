@@ -8,6 +8,7 @@ import datetime
 import openpyxl
 from flask import Flask
 from telebot import types
+from contextlib import contextmanager
 
 # ==================== KEEP-ALIVE & 1-MIN SELF-PING ENGINE ====================
 app = Flask('')
@@ -29,12 +30,44 @@ def self_ping():
         try:
             requests.get(url, timeout=10)
             print("🚀 1-Min Self-ping successful! Render kept awake.")
-        except Exception as e:
+        except Exception:
             pass
         time.sleep(60)
 
 threading.Thread(target=run_flask, daemon=True).start()
 threading.Thread(target=self_ping, daemon=True).start()
+
+# ==================== CONFIGURATION ====================
+BOT_TOKEN = "8842802759:AAFTzG_yyzHiirBiW2Canl2l0t_sG2HxKt8" # আপনার বটের টোকেন
+ADMIN_ID = 8125384914                                       # আপনার Admin ID
+DB_NAME = "fresh_master_shop.db"
+# =======================================================
+
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
+
+# In-Memory Session State Manager (Prevents DB bloat)
+USER_STATES = {}
+
+def set_user_state(user_id, key, value):
+    if user_id not in USER_STATES:
+        USER_STATES[user_id] = {}
+    USER_STATES[user_id][key] = value
+
+def get_user_state(user_id, key, default=None):
+    return USER_STATES.get(user_id, {}).get(key, default)
+
+def clear_user_state(user_id):
+    if user_id in USER_STATES:
+        USER_STATES[user_id].clear()
+
+# Context Manager for Safe Database Connections
+@contextmanager
+def get_db():
+    conn = sqlite3.connect(DB_NAME, timeout=15)
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 # Helper function to generate Excel File (.xlsx)
 def create_excel_document(product_name, lines):
@@ -55,131 +88,119 @@ def create_excel_document(product_name, lines):
     stream.name = file_name
     return stream
 
-# ==================== CONFIGURATION ====================
-BOT_TOKEN = "8842802759:AAFTzG_yyzHiirBiW2Canl2l0t_sG2HxKt8" # আপনার বটের টোকেন
-ADMIN_ID = 8125384914                                       # আপনার Admin ID
-DB_NAME = "fresh_master_shop.db"
-# =======================================================
-
-bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
-
 # ----------------- DATABASE INITIALIZATION -----------------
 def init_db():
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    
-    # Users Table
-    cursor.execute('''CREATE TABLE IF NOT EXISTS users (
-        user_id INTEGER PRIMARY KEY,
-        balance REAL DEFAULT 6.00,
-        referrals INTEGER DEFAULT 0,
-        referred_by INTEGER,
-        otp_count INTEGER DEFAULT 0,
-        joined_date TEXT DEFAULT CURRENT_DATE
-    )''')
-    
-    # OTP Stock Table
-    cursor.execute('''CREATE TABLE IF NOT EXISTS numbers (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        phone_number TEXT UNIQUE,
-        service TEXT,
-        country TEXT,
-        price REAL,
-        status TEXT DEFAULT 'available'
-    )''')
-    
-    # Dynamic Countries Table (Flag + Stock)
-    cursor.execute('''CREATE TABLE IF NOT EXISTS countries (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        service_name TEXT,
-        country_name TEXT,
-        country_flag TEXT DEFAULT '🌐',
-        country_code TEXT,
-        price REAL
-    )''')
-    
-    # Products Table
-    cursor.execute('''CREATE TABLE IF NOT EXISTS products (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        category TEXT,
-        name TEXT,
-        price REAL
-    )''')
-    
-    # Item Level Inventory Stock Table
-    cursor.execute('''CREATE TABLE IF NOT EXISTS item_stock (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        product_id INTEGER,
-        content TEXT,
-        status TEXT DEFAULT 'available'
-    )''')
-    
-    # Deposits Table
-    cursor.execute('''CREATE TABLE IF NOT EXISTS deposits (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        amount REAL,
-        method TEXT,
-        trx_id TEXT UNIQUE,
-        status TEXT DEFAULT 'pending'
-    )''')
-    
-    # System Settings Table
-    cursor.execute('''CREATE TABLE IF NOT EXISTS settings (
-        key TEXT PRIMARY KEY,
-        value TEXT
-    )''')
-    
-    # Default Settings
-    defaults = {
-        'bkash_num': '01833878871',
-        'nagad_num': '01833878871',
-        'binance_uid': '87654321',
-        'min_deposit': '20.0',
-        'deposit_bonus': '5',
-        'refer_reward': '0.11',
-        'otp_reward': '0.10',
-        'api_price': '0.30',
-        'number_api_key': 'M455243ZFHT',
-        'min_withdraw': '50.0',
-        'bot_status': 'ON',
-        'otp_group_link': 'https://t.me/your_otp_group'
-    }
-    for k, v in defaults.items():
-        cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (k, v))
+    with get_db() as conn:
+        cursor = conn.cursor()
         
-    # Default Sample Countries with Flags
-    cursor.execute("SELECT COUNT(*) FROM countries")
-    if cursor.fetchone()[0] == 0:
-        default_countries = [
-            ('Facebook', 'Uzbekistan', '🇺🇿', 'UZ', 0.30),
-            ('Facebook', 'Tanzania Top', '🇹🇿', 'TZ', 0.30),
-            ('Facebook', 'Tajikistan', '🇹🇯', 'TJ', 0.30),
-            ('Facebook', 'Egypt S1', '🇪🇬', 'EG', 0.30),
-            ('Facebook', 'Sudan FB', '🇸🇩', 'SD', 0.30),
-            ('FB NEW', 'Uzbekistan', '🇺🇿', 'UZ', 0.30)
-        ]
-        cursor.executemany("INSERT INTO countries (service_name, country_name, country_flag, country_code, price) VALUES (?, ?, ?, ?, ?)", default_countries)
+        # Users Table
+        cursor.execute('''CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            balance REAL DEFAULT 6.00,
+            referrals INTEGER DEFAULT 0,
+            referred_by INTEGER,
+            otp_count INTEGER DEFAULT 0,
+            joined_date TEXT DEFAULT CURRENT_DATE
+        )''')
+        
+        # OTP Stock Table
+        cursor.execute('''CREATE TABLE IF NOT EXISTS numbers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            phone_number TEXT UNIQUE,
+            service TEXT,
+            country TEXT,
+            price REAL,
+            status TEXT DEFAULT 'available'
+        )''')
+        
+        # Dynamic Countries Table (Flag + Stock)
+        cursor.execute('''CREATE TABLE IF NOT EXISTS countries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            service_name TEXT,
+            country_name TEXT,
+            country_flag TEXT DEFAULT '🌐',
+            country_code TEXT,
+            price REAL
+        )''')
+        
+        # Products Table
+        cursor.execute('''CREATE TABLE IF NOT EXISTS products (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            category TEXT,
+            name TEXT,
+            price REAL
+        )''')
+        
+        # Item Level Inventory Stock Table
+        cursor.execute('''CREATE TABLE IF NOT EXISTS item_stock (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_id INTEGER,
+            content TEXT,
+            status TEXT DEFAULT 'available'
+        )''')
+        
+        # Deposits Table
+        cursor.execute('''CREATE TABLE IF NOT EXISTS deposits (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            amount REAL,
+            method TEXT,
+            trx_id TEXT UNIQUE,
+            status TEXT DEFAULT 'pending'
+        )''')
+        
+        # System Settings Table
+        cursor.execute('''CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )''')
+        
+        # Default Settings
+        defaults = {
+            'bkash_num': '01833878871',
+            'nagad_num': '01833878871',
+            'binance_uid': '87654321',
+            'min_deposit': '20.0',
+            'deposit_bonus': '5',
+            'refer_reward': '0.11',
+            'otp_reward': '0.10',
+            'api_price': '0.30',
+            'number_api_key': 'M455243ZFHT',
+            'min_withdraw': '50.0',
+            'bot_status': 'ON',
+            'otp_group_link': 'https://t.me/your_otp_group'
+        }
+        for k, v in defaults.items():
+            cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (k, v))
+            
+        cursor.execute("SELECT COUNT(*) FROM countries")
+        if cursor.fetchone()[0] == 0:
+            default_countries = [
+                ('Facebook', 'Uzbekistan', '🇺🇿', 'UZ', 0.30),
+                ('Facebook', 'Tanzania Top', '🇹🇿', 'TZ', 0.30),
+                ('Facebook', 'Tajikistan', '🇹🇯', 'TJ', 0.30),
+                ('Facebook', 'Egypt S1', '🇪🇬', 'EG', 0.30),
+                ('Facebook', 'Sudan FB', '🇸🇩', 'SD', 0.30),
+                ('FB NEW', 'Uzbekistan', '🇺🇿', 'UZ', 0.30)
+            ]
+            cursor.executemany("INSERT INTO countries (service_name, country_name, country_flag, country_code, price) VALUES (?, ?, ?, ?, ?)", default_countries)
 
-    conn.commit()
-    conn.close()
+        conn.commit()
 
 init_db()
 
 def get_setting(key):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("SELECT value FROM settings WHERE key=?", (key,))
-    res = cursor.fetchone()
-    conn.close()
-    return res[0] if res else ""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT value FROM settings WHERE key=?", (key,))
+        res = cursor.fetchone()
+        return res[0] if res else ""
 
 def set_setting(key, value):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, str(value)))
-    conn.commit()
-    conn.close()
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, str(value)))
+        conn.commit()
 
 # ----------------- MAIN KEYBOARD -----------------
 def main_reply_keyboard(user_id):
@@ -197,31 +218,31 @@ def main_reply_keyboard(user_id):
 def start_cmd(message):
     user_id = message.from_user.id
     args = message.text.split()
-    referred_by = int(args[1]) if len(args) > 1 and args[1].isdigit() else None
+    referred_by = int(args[1]) if len(args) > 1 and args[1].isdigit() and int(args[1]) != user_id else None
 
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("SELECT user_id FROM users WHERE user_id=?", (user_id,))
-    user = cursor.fetchone()
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT user_id FROM users WHERE user_id=?", (user_id,))
+        user = cursor.fetchone()
 
-    if not user:
-        cursor.execute("INSERT INTO users (user_id, balance, referred_by) VALUES (?, 6.00, ?)", (user_id, referred_by))
-        conn.commit()
-    conn.close()
+        if not user:
+            cursor.execute("INSERT INTO users (user_id, balance, referred_by) VALUES (?, 6.00, ?)", (user_id, referred_by))
+            if referred_by:
+                cursor.execute("UPDATE users SET referrals = referrals + 1 WHERE user_id=?", (referred_by,))
+            conn.commit()
 
     bot.send_message(message.chat.id, "👋 <b>Will be Earn Shop & Fast SMS Bot</b>-এ আপনাকে স্বাগতম!", reply_markup=main_reply_keyboard(user_id))
 
-# ----------------- 📱 NUMBER'S BOT SYSTEM (AZ & FAST SMS STYLE) -----------------
+# ----------------- 📱 NUMBER'S BOT SYSTEM -----------------
 @bot.message_handler(func=lambda msg: msg.text in ["📱 Get Number", "📱 NUMBER'S"])
 def numbers_cmd(message):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("SELECT DISTINCT service_name FROM countries")
-    services = cursor.fetchall()
-    conn.close()
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT DISTINCT service_name FROM countries")
+        services = cursor.fetchall()
 
     if not services:
-        bot.send_message(message.chat.id, "⚠️ বর্তমানে কোনো সার্ভিস বা কান্ট্রি এভেলেবল নেই। অ্যাডমিন প্যানেল থেকে যোগ করুন।")
+        bot.send_message(message.chat.id, "⚠️ বর্তমানে কোনো সার্ভিস বা কান্ট্রি এভেলেবল নেই। এডমিন প্যানেল থেকে যোগ করুন।")
         return
 
     markup = types.InlineKeyboardMarkup(row_width=2)
@@ -235,32 +256,30 @@ def user_service_click(call):
     bot.answer_callback_query(call.id)
     service_name = call.data.split("_")[2]
     
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("SELECT country_name, country_flag, country_code, price FROM countries WHERE service_name=?", (service_name,))
-    countries = cursor.fetchall()
-    
-    markup = types.InlineKeyboardMarkup(row_width=1)
-    for c in countries:
-        c_name, c_flag, c_code, c_price = c
-        cursor.execute("SELECT COUNT(*) FROM numbers WHERE service=? AND country=? AND status='available'", (service_name, c_code))
-        stk = cursor.fetchone()[0]
-        display_stock = stk if stk > 0 else 2500  # API Fallback Display Stock
-        btn_text = f"{c_flag} {c_name} ({display_stock})"
-        markup.add(types.InlineKeyboardButton(btn_text, callback_data=f"buy_{service_name}_{c_code}_{c_price}"))
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT country_name, country_flag, country_code, price FROM countries WHERE service_name=?", (service_name,))
+        countries = cursor.fetchall()
+        
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        for c in countries:
+            c_name, c_flag, c_code, c_price = c
+            cursor.execute("SELECT COUNT(*) FROM numbers WHERE service=? AND country=? AND status='available'", (service_name, c_code))
+            stk = cursor.fetchone()[0]
+            display_stock = stk if stk > 0 else 0
+            btn_text = f"{c_flag} {c_name} ({display_stock})"
+            markup.add(types.InlineKeyboardButton(btn_text, callback_data=f"buy_{service_name}_{c_code}_{c_price}"))
 
     markup.add(types.InlineKeyboardButton("⬅️ Back To Services", callback_data="back_to_services"))
-    conn.close()
     bot.edit_message_text(f"🌍 <b>Select country for {service_name}:</b> ⬇️", call.message.chat.id, call.message.message_id, reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data == "back_to_services")
 def back_to_services_cb(call):
     bot.answer_callback_query(call.id)
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("SELECT DISTINCT service_name FROM countries")
-    services = cursor.fetchall()
-    conn.close()
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT DISTINCT service_name FROM countries")
+        services = cursor.fetchall()
 
     markup = types.InlineKeyboardMarkup(row_width=2)
     for s in services:
@@ -270,41 +289,41 @@ def back_to_services_cb(call):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("buy_"))
 def buy_number_click(call):
-    bot.answer_callback_query(call.id)
     _, service, country_code, price = call.data.split("_")
     price = float(price)
     user_id = call.from_user.id
 
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
-    bal = cursor.fetchone()[0]
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
+        user_row = cursor.fetchone()
+        bal = user_row[0] if user_row else 0.0
 
-    if bal < price:
-        bot.answer_callback_query(call.id, f"❌ আপনার পর্যাপ্ত ব্যালেন্স নেই! প্রয়োজন: {price}৳", show_alert=True)
-        conn.close()
-        return
+        if bal < price:
+            bot.answer_callback_query(call.id, f"❌ আপনার পর্যাপ্ত ব্যালেন্স নেই! প্রয়োজন: {price:.2f}৳", show_alert=True)
+            return
 
-    cursor.execute("SELECT country_name, country_flag FROM countries WHERE service_name=? AND country_code=?", (service, country_code))
-    c_info = cursor.fetchone()
-    c_name = c_info[0] if c_info else "Uzbekistan"
-    c_flag = c_info[1] if c_info else "🇺🇿"
+        cursor.execute("SELECT country_name, country_flag FROM countries WHERE service_name=? AND country_code=?", (service, country_code))
+        c_info = cursor.fetchone()
+        c_name = c_info[0] if c_info else country_code
+        c_flag = c_info[1] if c_info else "🇺🇿"
 
-    cursor.execute("SELECT id, phone_number FROM numbers WHERE service=? AND country=? AND status='available' LIMIT 4", (service, country_code))
-    num_rows = cursor.fetchall()
+        cursor.execute("SELECT id, phone_number FROM numbers WHERE service=? AND country=? AND status='available' LIMIT 4", (service, country_code))
+        num_rows = cursor.fetchall()
 
-    if not num_rows:
-        # Fallback generated live numbers for API
-        num_list = [f"99895{user_id % 10000000:07d}", f"99899{user_id % 10000000 + 1:07d}", f"99877{user_id % 10000000 + 2:07d}"]
-    else:
+        # Check stock strictly (Prevent Fake Charges)
+        if not num_rows:
+            bot.answer_callback_query(call.id, "❌ এই কান্ট্রির নম্বর বর্তমানে আউট অফ স্টক!", show_alert=True)
+            return
+
         num_list = [n[1] for n in num_rows]
         for n in num_rows:
             cursor.execute("UPDATE numbers SET status='assigned' WHERE id=?", (n[0],))
 
-    cursor.execute("UPDATE users SET balance = balance - ?, otp_count = otp_count + 1 WHERE user_id=?", (price, user_id))
-    conn.commit()
-    conn.close()
+        cursor.execute("UPDATE users SET balance = balance - ?, otp_count = otp_count + 1 WHERE user_id=?", (price, user_id))
+        conn.commit()
 
+    bot.answer_callback_query(call.id)
     numbers_text = "\n".join([f"{c_flag} <code>{p}</code>" for p in num_list])
     otp_group_link = get_setting('otp_group_link') or 'https://t.me/your_otp_group'
 
@@ -345,28 +364,26 @@ def category_select_cb(call):
     bot.answer_callback_query(call.id)
     category = call.data.split("_")[1]
     
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, name, price FROM products WHERE category=?", (category,))
-    products = cursor.fetchall()
-    
-    if not products:
-        bot.answer_callback_query(call.id, "⚠️ এই ক্যাটাগরিতে বর্তমানে কোনো প্রডাক্ট নেই!", show_alert=True)
-        conn.close()
-        return
-
-    text = f"<b>{category} — Select Category:</b>"
-    markup = types.InlineKeyboardMarkup(row_width=1)
-    
-    for p in products:
-        p_id, p_name, p_price = p
-        cursor.execute("SELECT COUNT(*) FROM item_stock WHERE product_id=? AND status='available'", (p_id,))
-        p_stock = cursor.fetchone()[0]
-        btn_text = f"📧 {p_name} · {p_price:.2f} BDT · {p_stock} in stock"
-        markup.add(types.InlineKeyboardButton(btn_text, callback_data=f"selectprod_{p_id}"))
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, name, price FROM products WHERE category=?", (category,))
+        products = cursor.fetchall()
         
+        if not products:
+            bot.answer_callback_query(call.id, "⚠️ এই ক্যাটাগরিতে বর্তমানে কোনো প্রডাক্ট নেই!", show_alert=True)
+            return
+
+        text = f"<b>{category} — Select Category:</b>"
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        
+        for p in products:
+            p_id, p_name, p_price = p
+            cursor.execute("SELECT COUNT(*) FROM item_stock WHERE product_id=? AND status='available'", (p_id,))
+            p_stock = cursor.fetchone()[0]
+            btn_text = f"📧 {p_name} · {p_price:.2f} BDT · {p_stock} in stock"
+            markup.add(types.InlineKeyboardButton(btn_text, callback_data=f"selectprod_{p_id}"))
+            
     markup.add(types.InlineKeyboardButton("‹ Back", callback_data="back_to_shop"))
-    conn.close()
     bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data == "back_to_shop")
@@ -387,22 +404,20 @@ def select_prod_cb(call):
     p_id = call.data.split("_")[1]
     user_id = call.from_user.id
     
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("SELECT name, price FROM products WHERE id=?", (p_id,))
-    prod = cursor.fetchone()
-    
-    if not prod:
-        conn.close()
-        return
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT name, price FROM products WHERE id=?", (p_id,))
+        prod = cursor.fetchone()
         
-    p_name, p_price = prod
-    cursor.execute("SELECT COUNT(*) FROM item_stock WHERE product_id=? AND status='available'", (p_id,))
-    p_stock = cursor.fetchone()[0]
-    conn.close()
+        if not prod:
+            return
+            
+        p_name, p_price = prod
+        cursor.execute("SELECT COUNT(*) FROM item_stock WHERE product_id=? AND status='available'", (p_id,))
+        p_stock = cursor.fetchone()[0]
     
-    set_setting(f"usr_buying_{user_id}", str(p_id))
-    set_setting(f"usr_step_{user_id}", "await_qty")
+    set_user_state(user_id, "buying_p_id", str(p_id))
+    set_user_state(user_id, "step", "await_qty")
     
     text = (
         f"📧 <b>{p_name}</b>\n"
@@ -419,42 +434,51 @@ def confirm_order_cb(call):
     bot.answer_callback_query(call.id)
     user_id = call.from_user.id
     
+    # 1. IMMEDIATELY remove/disable inline buttons to prevent double click spam
+    try:
+        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+    except Exception:
+        pass
+
     parts = call.data.split("_")
     p_id = int(parts[1])
     qty = int(parts[2])
     total_bdt = float(parts[3])
     
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
-    user_row = cursor.fetchone()
-    bal = user_row[0] if user_row else 0.0
-    
-    if bal < total_bdt:
-        bot.send_message(call.message.chat.id, f"❌ <b>অর্ডার সম্পূর্ণ করা সম্ভব হয়নি!</b>\n\nআপনার ব্যালেন্স: <b>{bal:.2f} BDT</b>\nপ্রয়োজন: <b>{total_bdt:.2f} BDT</b>\n\nঅনুগ্রহ করে 💳 Deposit সার্ভিস থেকে রিচার্জ করুন।")
-        conn.close()
-        return
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
+        user_row = cursor.fetchone()
+        bal = user_row[0] if user_row else 0.0
         
-    cursor.execute("SELECT id, content FROM item_stock WHERE product_id=? AND status='available' LIMIT ?", (p_id, qty))
-    items = cursor.fetchall()
-    
-    if len(items) < qty:
-        bot.answer_callback_query(call.id, "❌ পর্যাপ্ত স্টক খালি নেই!", show_alert=True)
-        conn.close()
-        return
+        if bal < total_bdt:
+            bot.edit_message_text(
+                f"❌ <b>অর্ডার সম্পূর্ণ করা সম্ভব হয়নি!</b>\n\n"
+                f"আপনার ব্যালেন্স: <b>{bal:.2f} BDT</b>\n"
+                f"প্রয়োজন: <b>{total_bdt:.2f} BDT</b>\n\n"
+                f"অনুগ্রহ করে 💳 Deposit সার্ভিস থেকে রিচার্জ করুন।",
+                call.message.chat.id, call.message.message_id
+            )
+            return
+            
+        cursor.execute("SELECT id, content FROM item_stock WHERE product_id=? AND status='available' LIMIT ?", (p_id, qty))
+        items = cursor.fetchall()
         
-    delivered_lines = []
-    for item in items:
-        item_id, content = item
-        delivered_lines.append(content)
-        cursor.execute("UPDATE item_stock SET status='sold' WHERE id=?", (item_id,))
+        if len(items) < qty:
+            bot.edit_message_text("❌ পর্যাপ্ত স্টক খালি নেই!", call.message.chat.id, call.message.message_id)
+            return
+            
+        delivered_lines = []
+        for item in items:
+            item_id, content = item
+            delivered_lines.append(content)
+            cursor.execute("UPDATE item_stock SET status='sold' WHERE id=?", (item_id,))
+            
+        cursor.execute("SELECT name FROM products WHERE id=?", (p_id,))
+        p_name = cursor.fetchone()[0]
         
-    cursor.execute("SELECT name FROM products WHERE id=?", (p_id,))
-    p_name = cursor.fetchone()[0]
-    
-    cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id=?", (total_bdt, user_id))
-    conn.commit()
-    conn.close()
+        cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id=?", (total_bdt, user_id))
+        conn.commit()
     
     excel_file = create_excel_document(p_name, delivered_lines)
     
@@ -472,11 +496,10 @@ def confirm_order_cb(call):
 @bot.message_handler(func=lambda msg: msg.text == "👤 My Profile")
 def profile_cmd(message):
     user_id = message.from_user.id
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("SELECT balance, referrals, joined_date, otp_count FROM users WHERE user_id=?", (user_id,))
-    row = cursor.fetchone()
-    conn.close()
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT balance, referrals, joined_date, otp_count FROM users WHERE user_id=?", (user_id,))
+        row = cursor.fetchone()
 
     bal = row[0] if row else 6.00
     refs = row[1] if row else 0
@@ -524,9 +547,9 @@ def dep_method_cb(call):
         min_dep = get_setting('min_deposit') or '20.0'
         num = get_setting(f'{method}_num') if method != 'binance' else get_setting('binance_uid')
         
-        set_setting(f"dep_method_{user_id}", method)
-        set_setting(f"dep_num_{user_id}", num)
-        set_setting(f"usr_step_{user_id}", "await_dep_amt")
+        set_user_state(user_id, "dep_method", method)
+        set_user_state(user_id, "dep_num", num)
+        set_user_state(user_id, "step", "await_dep_amt")
         
         text = f"🌸 <b>{method.upper()}</b>\n\nEnter deposit amount in BDT:\n<i>(Minimum: {min_dep} BDT)</i>"
         markup = types.InlineKeyboardMarkup()
@@ -539,9 +562,9 @@ def dep_paid_cb(call):
     user_id = call.from_user.id
     _, method, amt = call.data.split("_")
     
-    set_setting(f"dep_final_m_{user_id}", method)
-    set_setting(f"dep_final_a_{user_id}", amt)
-    set_setting(f"usr_step_{user_id}", "await_trxid")
+    set_user_state(user_id, "dep_final_m", method)
+    set_user_state(user_id, "dep_final_a", amt)
+    set_user_state(user_id, "step", "await_trxid")
     
     text = (
         f"🚩 <b>Enter Transaction ID (TrxID)</b>\n\n"
@@ -568,8 +591,7 @@ def get_code_cmd(message):
 def cancel_action_cb(call):
     bot.answer_callback_query(call.id)
     user_id = call.from_user.id
-    set_setting(f"usr_step_{user_id}", "")
-    set_setting(f"adm_step_{user_id}", "")
+    clear_user_state(user_id)
     bot.edit_message_text("❌ অপশনটি বাতিল করা হয়েছে।", call.message.chat.id, call.message.message_id)
 
 @bot.message_handler(func=lambda msg: msg.text == "🎧 Support")
@@ -610,14 +632,13 @@ def admin_cb_handler(call):
     user_id = call.from_user.id
     
     if data == "adm_clear_stock":
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM countries")
-        cursor.execute("DELETE FROM products")
-        cursor.execute("DELETE FROM item_stock")
-        cursor.execute("DELETE FROM numbers")
-        conn.commit()
-        conn.close()
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM countries")
+            cursor.execute("DELETE FROM products")
+            cursor.execute("DELETE FROM item_stock")
+            cursor.execute("DELETE FROM numbers")
+            conn.commit()
         bot.send_message(call.message.chat.id, "🗑️ আগের সকল কান্ট্রি ও শপ ইনভেন্টরি স্টক ক্লিয়ার করা হয়েছে!")
 
     elif data == "adm_add_shop_stock":
@@ -632,16 +653,15 @@ def admin_cb_handler(call):
 
     elif data.startswith("addstk_"):
         cat = data.split("_")[1]
-        set_setting(f"adm_add_cat_{user_id}", cat)
-        set_setting(f"adm_step_{user_id}", "add_prod_info")
+        set_user_state(user_id, "adm_add_cat", cat)
+        set_user_state(user_id, "adm_step", "add_prod_info")
         bot.send_message(call.message.chat.id, f"<b>{cat} Stock:</b>\n\nপ্রোডাক্টের নাম এবং প্রতি পিসের দাম লিখুন:\n\n<code>প্রোডাক্টের নাম, দাম</code>\n\nউদাহরণ:\n<code>Fr Outlook, 0.80</code>\nঅথবা\n<code>Hotmail Trusted, 0.70</code>")
 
     elif data == "adm_view_pending_dep":
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, user_id, amount, method, trx_id FROM deposits WHERE status='pending'")
-        deps = cursor.fetchall()
-        conn.close()
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, user_id, amount, method, trx_id FROM deposits WHERE status='pending'")
+            deps = cursor.fetchall()
         
         if not deps:
             bot.send_message(call.message.chat.id, "✅ বর্তমানে কোনো পেন্ডিং ডিপোজিট রিকুয়েস্ট নেই।")
@@ -659,31 +679,29 @@ def admin_cb_handler(call):
 
     elif data.startswith("adm_appr_dep_"):
         dep_id = data.split("_")[3]
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-        cursor.execute("SELECT user_id, amount, status FROM deposits WHERE id=?", (dep_id,))
-        row = cursor.fetchone()
-        
-        if row and row[2] == 'pending':
-            u_id, amt, _ = row
-            cursor.execute("UPDATE deposits SET status='approved' WHERE id=?", (dep_id,))
-            cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (amt, u_id))
-            conn.commit()
-            conn.close()
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT user_id, amount, status FROM deposits WHERE id=?", (dep_id,))
+            row = cursor.fetchone()
             
-            bot.edit_message_text(f"✅ <b>Deposit Approved!</b> ({amt:.2f} BDT)", call.message.chat.id, call.message.message_id)
-            try:
-                bot.send_message(u_id, f"🎉 আপনার ডিপোজিট এপ্রুভ হয়েছে এবং <b>{amt:.2f} BDT</b> অ্যাকাউন্টে যোগ হয়েছে!")
-            except: pass
-        else: conn.close()
+            if row and row[2] == 'pending':
+                u_id, amt, _ = row
+                cursor.execute("UPDATE deposits SET status='approved' WHERE id=?", (dep_id,))
+                cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (amt, u_id))
+                conn.commit()
+                
+                bot.edit_message_text(f"✅ <b>Deposit Approved!</b> ({amt:.2f} BDT)", call.message.chat.id, call.message.message_id)
+                try:
+                    bot.send_message(u_id, f"🎉 আপনার ডিপোজিট এপ্রুভ হয়েছে এবং <b>{amt:.2f} BDT</b> অ্যাকাউন্টে যোগ হয়েছে!")
+                except Exception:
+                    pass
             
     elif data.startswith("adm_rej_dep_"):
         dep_id = data.split("_")[3]
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-        cursor.execute("UPDATE deposits SET status='rejected' WHERE id=?", (dep_id,))
-        conn.commit()
-        conn.close()
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE deposits SET status='rejected' WHERE id=?", (dep_id,))
+            conn.commit()
         bot.edit_message_text("❌ <b>Deposit Rejected!</b>", call.message.chat.id, call.message.message_id)
 
     elif data == "adm_edit_payments":
@@ -702,7 +720,7 @@ def admin_cb_handler(call):
     elif data in ["set_pay_bkash", "set_pay_nagad", "set_pay_binance"]:
         m_name = data.split("_")[2]
         key = f"{m_name}_num" if m_name != "binance" else "binance_uid"
-        set_setting(f"adm_step_{user_id}", f"set_setting:{key}")
+        set_user_state(user_id, "adm_step", f"set_setting:{key}")
         bot.send_message(call.message.chat.id, f"✏️ <b>নতুন {m_name.upper()} নম্বর / UID টি লিখে মেসেজ দিন:</b>")
 
     elif data == "adm_edit_bonuses":
@@ -718,28 +736,28 @@ def admin_cb_handler(call):
 
     elif data in ["set_bonus_refer", "set_bonus_dep"]:
         key = "refer_reward" if data == "set_bonus_refer" else "deposit_bonus"
-        set_setting(f"adm_step_{user_id}", f"set_setting:{key}")
+        set_user_state(user_id, "adm_step", f"set_setting:{key}")
         bot.send_message(call.message.chat.id, "✏️ <b>নতুন পরিমাণটি টাইপ করে পাঠান:</b>")
 
     elif data == "adm_edit_apikey":
         curr_key = get_setting('number_api_key')
-        set_setting(f"adm_step_{user_id}", "set_setting:number_api_key")
+        set_user_state(user_id, "adm_step", "set_setting:number_api_key")
         bot.send_message(call.message.chat.id, f"🔑 <b>বর্তমান API Key:</b> <code>{curr_key}</code>\n\nনতুন Virtual Number API Key টাইপ করে পাঠান:")
 
     elif data == "adm_add_country":
-        set_setting(f"adm_step_{user_id}", "add_country")
+        set_user_state(user_id, "adm_step", "add_country")
         bot.send_message(call.message.chat.id, "🌐 <b>নতুন কান্ট্রি যোগ করার ফরম্যাট:</b>\n\n<code>SERVICE,COUNTRY_NAME,FLAG,CODE,PRICE</code>\n\nউদাহরণ:\n<code>Facebook,Uzbekistan,🇺🇿,UZ,0.30</code>\n<code>Facebook,Bangladesh,🇧🇩,BD,0.20</code>")
 
     elif data == "adm_upload_otp":
-        set_setting(f"adm_step_{user_id}", "upload_otp")
+        set_user_state(user_id, "adm_step", "upload_otp")
         bot.send_message(call.message.chat.id, "📥 <b>OTP নম্বর আপলোড ফরম্যাট:</b>\n\n<code>998951234567,Facebook,UZ</code>")
 
     elif data == "adm_edit_balance":
-        set_setting(f"adm_step_{user_id}", "edit_balance")
+        set_user_state(user_id, "adm_step", "edit_balance")
         bot.send_message(call.message.chat.id, "👤 <b>ইউজার ব্যালেন্স দিতে লিখুন:</b>\n\n<code>USER_ID,AMOUNT</code>\n\nউদাহরণ:\n<code>5455330929,100</code>")
 
     elif data == "adm_broadcast":
-        set_setting(f"adm_step_{user_id}", "broadcast")
+        set_user_state(user_id, "adm_step", "broadcast")
         bot.send_message(call.message.chat.id, "📢 <b>ইউজারদের কাছে পাঠাতে চাওয়া ব্রডকাস্ট মেসেজটি লিখুন:</b>")
 
 # ----------------- GLOBAL TEXT & FILE HANDLER -----------------
@@ -750,70 +768,93 @@ def global_message_handler(message):
     
     # Admin State Steps
     if user_id == ADMIN_ID:
-        adm_step = get_setting(f"adm_step_{user_id}")
+        adm_step = get_user_state(user_id, "adm_step")
         if adm_step:
             if adm_step.startswith("set_setting:"):
                 key = adm_step.split(":")[1]
                 set_setting(key, txt)
-                set_setting(f"adm_step_{user_id}", "")
+                clear_user_state(user_id)
                 bot.send_message(message.chat.id, f"✅ সফলভাবে <b>{key}</b> আপডেট হয়ে <b>{txt}</b> হয়েছে!")
                 return
+
             elif adm_step == "add_prod_info":
                 try:
                     parts = txt.split(",")
                     p_name = parts[0].strip()
                     p_price = float(parts[1].strip())
-                    cat = get_setting(f"adm_add_cat_{user_id}") or "Mail"
+                    cat = get_user_state(user_id, "adm_add_cat", "Mail")
                     
-                    conn = sqlite3.connect(DB_NAME)
-                    cursor = conn.cursor()
-                    cursor.execute("SELECT id FROM products WHERE category=? AND name=?", (cat, p_name))
-                    res = cursor.fetchone()
+                    with get_db() as conn:
+                        cursor = conn.cursor()
+                        cursor.execute("SELECT id FROM products WHERE category=? AND name=?", (cat, p_name))
+                        res = cursor.fetchone()
+                        
+                        if res:
+                            p_id = res[0]
+                            cursor.execute("UPDATE products SET price=? WHERE id=?", (p_price, p_id))
+                        else:
+                            cursor.execute("INSERT INTO products (category, name, price) VALUES (?, ?, ?)", (cat, p_name, p_price))
+                            p_id = cursor.lastrowid
+                        conn.commit()
                     
-                    if res:
-                        p_id = res[0]
-                        cursor.execute("UPDATE products SET price=? WHERE id=?", (p_price, p_id))
-                    else:
-                        cursor.execute("INSERT INTO products (category, name, price) VALUES (?, ?, ?)", (cat, p_name, p_price))
-                        p_id = cursor.lastrowid
-                    conn.commit()
-                    conn.close()
+                    set_user_state(user_id, "active_pid", str(p_id))
+                    set_user_state(user_id, "active_pname", p_name)
+                    set_user_state(user_id, "adm_step", "await_stock_items")
                     
-                    set_setting(f"active_pid_{user_id}", str(p_id))
-                    set_setting(f"active_pname_{user_id}", p_name)
-                    set_setting(f"adm_step_{user_id}", "await_stock_items")
-                    
-                    bot.send_message(message.chat.id, f"✅ <b>{p_name} ({p_price:.2f} BDT)</b> প্রোডাক্ট সিলেক্ট হয়েছে!\n\nএখন এই প্রোডাক্টের মেইল/অ্যাকাউন্টগুলোর তালিকা টেক্সট মেসেজে কপি-পেস্ট করে পাঠান:")
-                except:
+                    bot.send_message(message.chat.id, f"✅ <b>{p_name} ({p_price:.2f} BDT)</b> প্রোডাক্ট সিলেক্ট হয়েছে!\n\nএখন এই প্রোডাক্টের মেইল/অ্যাকাউন্টগুলোর তালিকা টেক্সট মেসেজ বা Excel/TXT ফাইলে পাঠান:")
+                except Exception:
                     bot.send_message(message.chat.id, "❌ ফরম্যাট ভুল হয়েছে। লিখুন: `প্রোডাক্টের নাম, দাম`")
                 return
+
             elif adm_step == "await_stock_items":
-                p_id = get_setting(f"active_pid_{user_id}")
-                p_name = get_setting(f"active_pname_{user_id}")
+                p_id = get_user_state(user_id, "active_pid")
+                p_name = get_user_state(user_id, "active_pname")
                 
-                content_text = ""
+                lines = []
+                
+                # FIXED: Proper Parsing for Excel (.xlsx) Documents
                 if message.document:
                     file_info = bot.get_file(message.document.file_id)
                     downloaded_file = bot.download_file(file_info.file_path)
-                    content_text = downloaded_file.decode('utf-8', errors='ignore')
-                else:
-                    content_text = txt
+                    file_name = message.document.file_name or ""
                     
-                lines = [line.strip() for line in content_text.split("\n") if line.strip()]
+                    if file_name.endswith(('.xlsx', '.xls')):
+                        try:
+                            wb = openpyxl.load_workbook(io.BytesIO(downloaded_file))
+                            ws = wb.active
+                            for row in ws.iter_rows(values_only=True):
+                                if row:
+                                    row_vals = [str(cell).strip() for cell in row if cell is not None and str(cell).strip()]
+                                    if row_vals:
+                                        lines.append(" | ".join(row_vals))
+                        except Exception as e:
+                            bot.send_message(message.chat.id, f"❌ Excel ফাইল পড়তে সমস্যা হয়েছে: {e}")
+                            return
+                    else:
+                        try:
+                            text_data = downloaded_file.decode('utf-8', errors='ignore')
+                        except Exception:
+                            text_data = downloaded_file.decode('latin-1', errors='ignore')
+                        lines = [line.strip() for line in text_data.split("\n") if line.strip()]
+                else:
+                    lines = [line.strip() for line in txt.split("\n") if line.strip()]
+
+                if not lines:
+                    bot.send_message(message.chat.id, "⚠️ কোনো অ্যাকাউন্ট পাওয়া যায়নি! ফাইল বা টেক্সট সঠিকভাবে পাঠান।")
+                    return
                 
-                conn = sqlite3.connect(DB_NAME)
-                cursor = conn.cursor()
-                added_count = 0
-                for line in lines:
-                    cursor.execute("INSERT INTO item_stock (product_id, content) VALUES (?, ?)", (p_id, line))
-                    added_count += 1
-                conn.commit()
+                with get_db() as conn:
+                    cursor = conn.cursor()
+                    added_count = 0
+                    for line in lines:
+                        cursor.execute("INSERT INTO item_stock (product_id, content) VALUES (?, ?)", (p_id, line))
+                        added_count += 1
+                    conn.commit()
+                    
+                    cursor.execute("SELECT COUNT(*) FROM item_stock WHERE product_id=? AND status='available'", (p_id,))
+                    total_stock = cursor.fetchone()[0]
                 
-                cursor.execute("SELECT COUNT(*) FROM item_stock WHERE product_id=? AND status='available'", (p_id,))
-                total_stock = cursor.fetchone()[0]
-                conn.close()
-                
-                set_setting(f"adm_step_{user_id}", "")
+                clear_user_state(user_id)
                 bot.send_message(message.chat.id, f"🎉 সফলভাবে <b>{added_count} টি {p_name}</b> স্টকে যুক্ত হয়েছে!\n\n📦 <b>মোট বর্তমান স্টক:</b> {total_stock} টি।")
                 return
 
@@ -826,62 +867,77 @@ def global_message_handler(message):
                     c_code = parts[3].strip().upper()
                     price = float(parts[4].strip())
                     
-                    conn = sqlite3.connect(DB_NAME)
-                    cursor = conn.cursor()
-                    cursor.execute("INSERT INTO countries (service_name, country_name, country_flag, country_code, price) VALUES (?, ?, ?, ?, ?)", (srv, c_name, flag, c_code, price))
-                    conn.commit()
-                    conn.close()
-                    set_setting(f"adm_step_{user_id}", "")
+                    with get_db() as conn:
+                        cursor = conn.cursor()
+                        cursor.execute("INSERT INTO countries (service_name, country_name, country_flag, country_code, price) VALUES (?, ?, ?, ?, ?)", (srv, c_name, flag, c_code, price))
+                        conn.commit()
+                    
+                    clear_user_state(user_id)
                     bot.send_message(message.chat.id, f"✅ সফলভাবে <b>{flag} {c_name} ({srv})</b> সার্ভিস যোগ হয়েছে!")
-                except:
+                except Exception:
                     bot.send_message(message.chat.id, "❌ ফরম্যাট ভুল হয়েছে। ফরম্যাট: `SERVICE,COUNTRY_NAME,FLAG,CODE,PRICE`")
                 return
 
+            elif adm_step == "edit_balance":
+                try:
+                    parts = txt.split(",")
+                    target_id = int(parts[0].strip())
+                    add_bal = float(parts[1].strip())
+                    
+                    with get_db() as conn:
+                        cursor = conn.cursor()
+                        cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (add_bal, target_id))
+                        conn.commit()
+                        
+                    clear_user_state(user_id)
+                    bot.send_message(message.chat.id, f"✅ ইউজার <code>{target_id}</code> এর ব্যালেন্সে <b>{add_bal:.2f} BDT</b> যোগ করা হয়েছে!")
+                except Exception:
+                    bot.send_message(message.chat.id, "❌ ফরম্যাট ভুল হয়েছে। ফরম্যাট: `USER_ID,AMOUNT`")
+                return
+
             elif adm_step == "broadcast":
-                conn = sqlite3.connect(DB_NAME)
-                cursor = conn.cursor()
-                cursor.execute("SELECT user_id FROM users")
-                users = cursor.fetchall()
-                conn.close()
+                with get_db() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT user_id FROM users")
+                    users = cursor.fetchall()
                 s, f = 0, 0
                 for u in users:
                     try:
                         bot.send_message(u[0], txt)
                         s += 1
-                    except: f += 1
-                set_setting(f"adm_step_{user_id}", "")
+                    except Exception:
+                        f += 1
+                clear_user_state(user_id)
                 bot.send_message(message.chat.id, f"✅ ব্রডকাস্ট সম্পন্ন!\n\nসফল: {s} জন\nব্যর্থ: {f} জন")
                 return
 
-    # User Steps
-    usr_step = get_setting(f"usr_step_{user_id}")
+    # User State Steps
+    usr_step = get_user_state(user_id, "step")
     if usr_step == "await_qty":
         try:
             qty = int(txt)
-            p_id = get_setting(f"usr_buying_{user_id}")
+            p_id = get_user_state(user_id, "buying_p_id")
             
-            conn = sqlite3.connect(DB_NAME)
-            cursor = conn.cursor()
-            cursor.execute("SELECT name, price FROM products WHERE id=?", (p_id,))
-            prod = cursor.fetchone()
-            p_name, p_price = prod[0], prod[1]
-            
-            cursor.execute("SELECT COUNT(*) FROM item_stock WHERE product_id=? AND status='available'", (p_id,))
-            p_stock = cursor.fetchone()[0]
-            
-            if qty <= 0 or qty > p_stock:
-                bot.send_message(message.chat.id, f"❌ পর্যাপ্ত স্টক নেই! সর্বোচ্চ {p_stock} টি নিতে পারবেন।")
-                conn.close()
-                return
+            with get_db() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT name, price FROM products WHERE id=?", (p_id,))
+                prod = cursor.fetchone()
+                p_name, p_price = prod[0], prod[1]
                 
-            total_bdt = qty * p_price
-            total_usdt = total_bdt / 125.0
+                cursor.execute("SELECT COUNT(*) FROM item_stock WHERE product_id=? AND status='available'", (p_id,))
+                p_stock = cursor.fetchone()[0]
+                
+                if qty <= 0 or qty > p_stock:
+                    bot.send_message(message.chat.id, f"❌ পর্যাপ্ত স্টক নেই! সর্বোচ্চ {p_stock} টি নিতে পারবেন।")
+                    return
+                    
+                total_bdt = qty * p_price
+                total_usdt = total_bdt / 125.0
+                
+                cursor.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
+                bal = cursor.fetchone()[0]
             
-            cursor.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
-            bal = cursor.fetchone()[0]
-            conn.close()
-            
-            set_setting(f"usr_step_{user_id}", "")
+            clear_user_state(user_id)
             
             text = (
                 f"📬 <b>Order Summary</b>\n\n"
@@ -896,7 +952,7 @@ def global_message_handler(message):
                 types.InlineKeyboardButton("❌ Cancel", callback_data="cancel_action")
             )
             bot.send_message(message.chat.id, text, reply_markup=markup)
-        except Exception as e:
+        except Exception:
             bot.send_message(message.chat.id, "❌ সঠিক সংখ্যা টাইপ করুন।")
         return
 
@@ -908,9 +964,9 @@ def global_message_handler(message):
                 bot.send_message(message.chat.id, f"❌ সর্বনিম্ন ডিপোজিট {min_dep} BDT।")
                 return
             
-            method = get_setting(f"dep_method_{user_id}")
-            num = get_setting(f"dep_num_{user_id}")
-            set_setting(f"usr_step_{user_id}", "")
+            method = get_user_state(user_id, "dep_method")
+            num = get_user_state(user_id, "dep_num")
+            clear_user_state(user_id)
             
             text = (
                 f"💳 <b>{method.upper()}</b>\n\n"
@@ -925,27 +981,26 @@ def global_message_handler(message):
                 types.InlineKeyboardButton("❌ Cancel", callback_data="cancel_action")
             )
             bot.send_message(message.chat.id, text, reply_markup=markup)
-        except:
+        except Exception:
             bot.send_message(message.chat.id, "❌ সঠিক সংখ্যা টাইপ করুন।")
         return
 
     elif usr_step == "await_trxid":
         trx_id = txt.upper()
-        method = get_setting(f"dep_final_m_{user_id}")
-        amt = float(get_setting(f"dep_final_a_{user_id}") or 20.0)
+        method = get_user_state(user_id, "dep_final_m")
+        amt = float(get_user_state(user_id, "dep_final_a") or 20.0)
         
         dep_bonus_pct = float(get_setting('deposit_bonus') or 5.0)
         final_amt = amt + (amt * (dep_bonus_pct / 100.0))
         
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
         try:
-            cursor.execute("INSERT INTO deposits (user_id, amount, method, trx_id) VALUES (?, ?, ?, ?)", (user_id, final_amt, method.upper(), trx_id))
-            conn.commit()
-            dep_id = cursor.lastrowid
-            conn.close()
+            with get_db() as conn:
+                cursor = conn.cursor()
+                cursor.execute("INSERT INTO deposits (user_id, amount, method, trx_id) VALUES (?, ?, ?, ?)", (user_id, final_amt, method.upper(), trx_id))
+                conn.commit()
+                dep_id = cursor.lastrowid
             
-            set_setting(f"usr_step_{user_id}", "")
+            clear_user_state(user_id)
             bot.send_message(message.chat.id, "✅ আপনার ডিপোজিট রিকুয়েস্ট সফলভাবে সাবমিট হয়েছে। এডমিন ভেরিফাই করে এপ্রুভ করে দেবে।")
             
             admin_text = (
@@ -961,10 +1016,11 @@ def global_message_handler(message):
                 types.InlineKeyboardButton("✅ Approve", callback_data=f"adm_appr_dep_{dep_id}"),
                 types.InlineKeyboardButton("❌ Reject", callback_data=f"adm_rej_dep_{dep_id}")
             )
-            try: bot.send_message(ADMIN_ID, admin_text, reply_markup=markup)
-            except: pass
+            try:
+                bot.send_message(ADMIN_ID, admin_text, reply_markup=markup)
+            except Exception:
+                pass
         except sqlite3.IntegrityError:
-            conn.close()
             bot.send_message(message.chat.id, "❌ এই TrxID টি আগেই ব্যবহার করা হয়েছে!")
         return
 
