@@ -915,12 +915,12 @@ def admin_cb_handler(call):
         bk = get_setting('bkash_num')
         ng = get_setting('nagad_num')
         bn = get_setting('binance_uid')
-        text = f"⚙️ <b>Edit Payment Methods</b>\n\n🌸 bKash: {bk}\n🟠 Nagad: {ng}\n🟡 Binance UID: {bn}"
+        text = f"⚙️ <b>Edit Payment Methods</b>\n\n💸 bKash: {bk}\n💸 Nagad: {ng}\n💸 Binance UID: {bn}"
         markup = types.InlineKeyboardMarkup(row_width=1)
         markup.add(
-            types.InlineKeyboardButton("🌸 Edit bKash Number", callback_data="set_pay_bkash"),
-            types.InlineKeyboardButton("🟠 Edit Nagad Number", callback_data="set_pay_nagad"),
-            types.InlineKeyboardButton("🟡 Edit Binance UID", callback_data="set_pay_binance")
+            types.InlineKeyboardButton("💸 Edit bKash Number", callback_data="set_pay_bkash"),
+            types.InlineKeyboardButton("💸 Edit Nagad Number", callback_data="set_pay_nagad"),
+            types.InlineKeyboardButton("💸 Edit Binance UID", callback_data="set_pay_binance")
         )
         bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup)
 
