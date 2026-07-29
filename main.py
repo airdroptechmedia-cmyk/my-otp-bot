@@ -72,13 +72,8 @@ def get_db():
 
 # ----------------- TELEGRAM CLOUD AUTO-BACKUP & RESTORE ENGINE -----------------
 def backup_db_to_telegram():
-    """Uploads SQLite DB to Admin Telegram Chat as Cloud Backup"""
-    try:
-        if os.path.exists(DB_NAME):
-            with open(DB_NAME, 'rb') as f:
-                bot.send_document(ADMIN_ID, f, caption="#DB_BACKUP ☁️ Auto Data Backup")
-    except Exception as e:
-        print(f"Cloud Backup Error: {e}")
+    """Disabled sending DB file to admin panel chat to prevent spamming"""
+    pass
 
 def restore_db_from_telegram():
     """Restores SQLite DB from latest Telegram Backup on Render Startup"""
@@ -129,11 +124,16 @@ def init_db():
         cursor.execute('''CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
             balance REAL DEFAULT 6.00,
+            reward_balance REAL DEFAULT 0.00,
             referrals INTEGER DEFAULT 0,
             referred_by INTEGER,
             otp_count INTEGER DEFAULT 0,
             joined_date TEXT DEFAULT CURRENT_DATE
         )''')
+        try:
+            cursor.execute("ALTER TABLE users ADD COLUMN reward_balance REAL DEFAULT 0.00")
+        except Exception:
+            pass
         
         # Active API Number Orders Table
         cursor.execute('''CREATE TABLE IF NOT EXISTS active_orders (
@@ -344,6 +344,30 @@ def voltx_get_number(range_id):
     except Exception as e:
         return False, f"⚠️ সংযোগ বিচ্ছিন্ন: {e}", None
 
+def extract_otp_from_response(res, clean_phone, order_id):
+    try:
+        items = res.get("data") or res.get("result") or res.get("messages") or res.get("sms") or res
+        if isinstance(items, list):
+            for item in items:
+                if isinstance(item, dict):
+                    item_num = str(item.get("full_number", "")) or str(item.get("number", "")) or str(item.get("phone", "")) or str(item.get("no_plus_number", ""))
+                    if not item_num or clean_phone in item_num or str(order_id) in item_num:
+                        code = item.get("code") or item.get("sms") or item.get("otp") or item.get("message") or item.get("text")
+                        if code:
+                            return str(code)
+                elif isinstance(item, str) and len(item) > 0:
+                    return item
+        elif isinstance(items, dict):
+            code = items.get("code") or items.get("sms") or items.get("otp") or items.get("message") or items.get("text")
+            if code:
+                return str(code)
+            for k, v in items.items():
+                if k in ['code', 'sms', 'otp', 'message', 'text'] and v:
+                    return str(v)
+    except Exception:
+        pass
+    return None
+
 def voltx_check_sms(phone_num, order_id):
     api_key = get_setting('number_api_key')
     base_url = get_setting('api_base_url') or "https://api.2oo9.cloud/MXS47FLFX0U/tnevs/@public/api"
@@ -355,33 +379,42 @@ def voltx_check_sms(phone_num, order_id):
     
     clean_phone = str(phone_num).replace("+", "").strip()
     
-    urls_to_try = [
-        f"{base_url.rstrip('/')}/success-otp?number={clean_phone}",
-        f"{base_url.rstrip('/')}/success-otp?id={order_id}",
-        get_setting('getmsg_url') or f"{base_url.rstrip('/')}/success-otp"
+    endpoints = [
+        f"{base_url.rstrip('/')}/success-otp",
+        f"{base_url.rstrip('/')}/getmsg",
+        f"{base_url.rstrip('/')}/check-sms",
+        get_setting('getmsg_url')
     ]
     
-    for url in urls_to_try:
-        try:
-            r = requests.get(url, headers=headers, timeout=6)
-            res = r.json()
-            
-            if res.get("meta", {}).get("code") == 200 and res.get("data"):
-                items = res.get("data")
-                if isinstance(items, list):
-                    for item in items:
-                        item_num = str(item.get("full_number", "")) or str(item.get("number", "")) or str(item.get("no_plus_number", ""))
-                        if clean_phone in item_num or str(order_id) in item_num:
-                            code = item.get("code") or item.get("sms") or item.get("otp")
-                            if code:
-                                return "RECEIVED", str(code)
-                elif isinstance(items, dict):
-                    code = items.get("code") or items.get("sms") or items.get("otp")
-                    if code:
-                        return "RECEIVED", str(code)
-        except Exception:
-            pass
-            
+    for url in endpoints:
+        if not url:
+            continue
+        for param_key in ['number', 'phone', 'id', 'order_id']:
+            try:
+                r = requests.get(f"{url.split('?')[0]}?{param_key}={clean_phone if param_key in ['number','phone'] else order_id}", headers=headers, timeout=6)
+                res = r.json()
+                code = extract_otp_from_response(res, clean_phone, order_id)
+                if code:
+                    return "RECEIVED", str(code)
+            except Exception:
+                pass
+                
+        for payload in [
+            {"number": clean_phone},
+            {"phone": clean_phone},
+            {"id": order_id},
+            {"order_id": order_id},
+            {"number": clean_phone, "id": order_id}
+        ]:
+            try:
+                r = requests.post(url.split('?')[0], json=payload, headers=headers, timeout=6)
+                res = r.json()
+                code = extract_otp_from_response(res, clean_phone, order_id)
+                if code:
+                    return "RECEIVED", str(code)
+            except Exception:
+                pass
+                
     return "WAITING", None
 
 # ----------------- 🔄 AUTO OTP POLLING & CLOUD SYNC THREAD -----------------
@@ -404,9 +437,11 @@ def auto_otp_checker_loop():
                     with get_db() as conn:
                         cursor = conn.cursor()
                         cursor.execute("UPDATE active_orders SET status='COMPLETED', last_code=? WHERE id=?", (otp_code, db_id))
-                        cursor.execute("UPDATE users SET balance = balance + ?, otp_count = otp_count + 1 WHERE user_id=?", (otp_reward_val, user_id))
-                        cursor.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
-                        new_bal = cursor.fetchone()[0]
+                        cursor.execute("UPDATE users SET balance = balance + ?, reward_balance = reward_balance + ?, otp_count = otp_count + 1 WHERE user_id=?", (otp_reward_val, otp_reward_val, user_id))
+                        cursor.execute("SELECT balance, reward_balance FROM users WHERE user_id=?", (user_id,))
+                        row_user = cursor.fetchone()
+                        new_bal = row_user[0] if row_user else 0.0
+                        new_rew_bal = row_user[1] if row_user and len(row_user) > 1 else 0.0
                         
                         cursor.execute("SELECT country_flag FROM countries WHERE service_name=? AND country_code=? LIMIT 1", (service_name, c_code))
                         flag_row = cursor.fetchone()
@@ -423,7 +458,8 @@ def auto_otp_checker_loop():
                         f"📘 <b>OTP Code:</b> <code>{otp_code}</code>\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
                         f"🎁 <b>OTP Reward Credited: +{otp_reward_val:.2f} BDT</b>\n"
-                        f"💰 <b>Your New Balance: {new_bal:.2f} BDT</b>\n\n"
+                        f"💰 <b>Reward Balance: {new_rew_bal:.2f} BDT</b>\n"
+                        f"💼 <b>Total Balance: {new_bal:.2f} BDT</b>\n\n"
                         f"👉 <i>(কোডের ওপর টাচ করলেই অটোমেটিক কপি হয়ে যাবে!)</i>"
                     )
                     try:
@@ -575,7 +611,6 @@ def buy_number_click(call):
         
         c_name = c_row[0] if c_row else "Uzbekistan"
         c_flag = c_row[1] if c_row else "🇺🇿"
-        c_price = c_row[2] if c_row else 0.00
 
     assigned_numbers = []
     for _ in range(4):
@@ -597,9 +632,10 @@ def buy_number_click(call):
     num_str_list = "\n".join([f"{c_flag} 📋 <code>{p}</code>" for p in assigned_numbers])
     otp_group_link = get_setting('otp_group_link') or 'https://t.me/otpreciverpro'
 
+    otp_reward_val = float(get_setting('otp_reward') or 0.10)
     text = (
         f"{c_flag} <b>{c_name}</b> 📘 <b>Number Assigned</b>\n\n"
-        f"💰 <b>Per OTP : {c_price:.2f} TK</b>\n"
+        f"💰 <b>Per OTP Reward : {otp_reward_val:.2f} BDT</b>\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"{num_str_list}\n\n"
         f"⏳ <i>Waiting for OTP... (অটোমেটিক চেক হচ্ছে)</i>"
@@ -936,13 +972,14 @@ def profile_cmd(message):
     user_id = message.from_user.id
     with get_db() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT balance, referrals, joined_date, otp_count FROM users WHERE user_id=?", (user_id,))
+        cursor.execute("SELECT balance, reward_balance, referrals, joined_date, otp_count FROM users WHERE user_id=?", (user_id,))
         row = cursor.fetchone()
 
     bal = row[0] if row else 6.00
-    refs = row[1] if row else 0
-    joined = row[2] if row else "2026-06-27"
-    otps = row[3] if row else 0
+    rew_bal = row[1] if row and len(row) > 1 else 0.00
+    refs = row[2] if row and len(row) > 2 else 0
+    joined = row[3] if row and len(row) > 3 else "2026-06-27"
+    otps = row[4] if row and len(row) > 4 else 0
     usdt = bal / 125.0
     bot_uname = bot.get_me().username
     ref_link = f"https://t.me/{bot_uname}?start={user_id}"
@@ -952,6 +989,7 @@ def profile_cmd(message):
         f"👤 <b>Name     :</b> {message.from_user.first_name}\n"
         f"🆔 <b>User ID  :</b> <code>{user_id}</code>\n"
         f"💰 <b>Balance  :</b> {bal:.2f} BDT / {usdt:.4f} USDT\n"
+        f"🎁 <b>Reward Bal :</b> {rew_bal:.2f} BDT <i>(Withdrawable)</i>\n"
         f"🥳 <b>Joined   :</b> {joined}\n"
         f"🔢 <b>OTP Received :</b> {otps}\n"
         f"🤝 <b>Referrals :</b> {refs}\n\n"
@@ -999,15 +1037,17 @@ def withdraw_cmd(message):
     min_w = float(get_setting('min_withdraw') or 50.0)
     with get_db() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
+        cursor.execute("SELECT balance, reward_balance FROM users WHERE user_id=?", (user_id,))
         row = cursor.fetchone()
         bal = row[0] if row else 0.0
+        rew_bal = row[1] if row and len(row) > 1 else 0.0
 
-    if bal < min_w:
+    if rew_bal < min_w:
         bot.send_message(
             message.chat.id,
-            f"❌ <b>উইথড্র করার জন্য পর্যাপ্ত ব্যালেন্স নেই!</b>\n\n"
-            f"আপনার বর্তমান ব্যালেন্স: <b>{bal:.2f} BDT</b>\n"
+            f"❌ <b>উইথড্র করার জন্য পর্যাপ্ত রিওয়ার্ড ব্যালেন্স নেই!</b>\n\n"
+            f"আপনার রিওয়ার্ড ব্যালেন্স: <b>{rew_bal:.2f} BDT</b>\n"
+            f"(ডিপোজিট করা ব্যালেন্স দিয়ে উইথড্র করা যাবে না)\n"
             f"সর্বনিম্ন উইথড্র: <b>{min_w:.2f} BDT</b>"
         )
         return
@@ -1250,10 +1290,10 @@ def admin_cb_handler(call):
             if row:
                 u_id, amt = row
                 cursor.execute("UPDATE withdrawals SET status='rejected' WHERE id=?", (w_id,))
-                cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (amt, u_id))
+                cursor.execute("UPDATE users SET reward_balance = reward_balance + ? WHERE user_id=?", (amt, u_id))
                 conn.commit()
                 backup_db_to_telegram()
-                bot.edit_message_text(f"❌ <b>Withdrawal #{w_id} Rejected & {amt:.2f} BDT Refunded to User!</b>", call.message.chat.id, call.message.message_id)
+                bot.edit_message_text(f"❌ <b>Withdrawal #{w_id} Rejected & {amt:.2f} BDT Refunded to User Reward Balance!</b>", call.message.chat.id, call.message.message_id)
 
     elif data == "adm_edit_force_join":
         curr = get_setting('force_channels') or "None"
@@ -1586,20 +1626,21 @@ def global_message_handler(message):
             
             with get_db() as conn:
                 cursor = conn.cursor()
-                cursor.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
-                bal = cursor.fetchone()[0]
+                cursor.execute("SELECT reward_balance FROM users WHERE user_id=?", (user_id,))
+                rew_row = cursor.fetchone()
+                rew_bal = rew_row[0] if rew_row else 0.0
                 
                 if amt < min_w:
                     bot.send_message(message.chat.id, f"❌ সর্বনিম্ন উইথড্র {min_w:.2f} BDT।")
                     return
-                if bal < amt:
-                    bot.send_message(message.chat.id, f"❌ আপনার পর্যাপ্ত ব্যালেন্স নেই! (বর্তমান ব্যালেন্স: {bal:.2f} BDT)")
+                if rew_bal < amt:
+                    bot.send_message(message.chat.id, f"❌ আপনার পর্যাপ্ত রিওয়ার্ড ব্যালেন্স নেই! (বর্তমান রিওয়ার্ড ব্যালেন্স: {rew_bal:.2f} BDT)")
                     return
                     
                 method = get_user_state(user_id, "w_method")
                 acc = get_user_state(user_id, "w_acc_final")
                 
-                cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id=?", (amt, user_id))
+                cursor.execute("UPDATE users SET reward_balance = reward_balance - ? WHERE user_id=?", (amt, user_id))
                 cursor.execute("INSERT INTO withdrawals (user_id, amount, method, account_number) VALUES (?, ?, ?, ?)", (user_id, amt, method, acc))
                 w_id = cursor.lastrowid
                 conn.commit()
