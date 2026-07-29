@@ -7,6 +7,7 @@ import threading
 import io
 import datetime
 import openpyxl
+import concurrent.futures
 from flask import Flask
 from telebot import types
 from contextlib import contextmanager
@@ -47,6 +48,13 @@ DB_NAME = "fresh_master_shop.db"
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 
+# Cache Bot Username for fast performance
+BOT_USERNAME = ""
+try:
+    BOT_USERNAME = bot.get_me().username
+except Exception:
+    BOT_USERNAME = "otpreciverpro_bot"
+
 USER_STATES = {}
 
 def set_user_state(user_id, key, value):
@@ -71,14 +79,34 @@ def get_db():
         conn.close()
 
 # ----------------- TELEGRAM CLOUD AUTO-BACKUP & RESTORE ENGINE -----------------
-def backup_db_to_telegram():
-    """Disabled sending DB file to admin panel chat to prevent spamming"""
-    pass
+LAST_BACKUP_TIME = 0
+
+def backup_db_to_telegram(force=False):
+    """Safely backs up SQLite DB to Telegram Cloud (Admin Chat)"""
+    global LAST_BACKUP_TIME
+    now = time.time()
+    # Throttle non-forced backups to at most once every 10 seconds to avoid spamming
+    if not force and (now - LAST_BACKUP_TIME < 10):
+        return
+        
+    try:
+        if os.path.exists(DB_NAME):
+            with open(DB_NAME, 'rb') as doc:
+                bot.send_document(
+                    ADMIN_ID,
+                    doc,
+                    caption=f"#DB_BACKUP | Auto Cloud Sync | {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                    disable_notification=True
+                )
+            LAST_BACKUP_TIME = now
+            print("☁️ DB Cloud Backup sent to Telegram successfully!")
+    except Exception as e:
+        print(f"Backup DB Exception: {e}")
 
 def restore_db_from_telegram():
     """Restores SQLite DB from latest Telegram Backup on Render Startup"""
     try:
-        updates = bot.get_updates(limit=50)
+        updates = bot.get_updates(limit=100)
         for update in reversed(updates):
             msg = update.message
             if msg and msg.caption and "#DB_BACKUP" in msg.caption and msg.document:
@@ -325,7 +353,7 @@ def voltx_get_number(range_id):
     payload = {"rid": str(range_id)}
     
     try:
-        r = requests.post(url, json=payload, headers=headers, timeout=10)
+        r = requests.post(url, json=payload, headers=headers, timeout=8)
         res = r.json()
         
         meta = res.get("meta", {})
@@ -345,32 +373,82 @@ def voltx_get_number(range_id):
         return False, f"⚠️ সংযোগ বিচ্ছিন্ন: {e}", None
 
 def extract_otp_from_response(res, clean_phone, order_id):
-    try:
-        items = res.get("data") or res.get("result") or res.get("messages") or res.get("sms") or res
+    """Robust OTP Extractor - Handles all 2oo9.cloud / VoltX SMS response structures safely"""
+    if not res:
+        return None
+    
+    clean_phone = str(clean_phone).replace("+", "").strip() if clean_phone else ""
+    str_order_id = str(order_id).replace("+", "").strip() if order_id else ""
+    
+    # Helper to extract code string from dictionary
+    def get_code_from_dict(d):
+        if not isinstance(d, dict):
+            return None
+        for field in ['code', 'otp', 'sms', 'message', 'text', 'last_code', 'msg']:
+            val = d.get(field)
+            if val is not None and str(val).strip() != "":
+                return str(val).strip()
+        return None
+
+    # Helper to check if dictionary matches number or order_id
+    def matches_target(d):
+        if not isinstance(d, dict):
+            return True
+        possible_nums = []
+        for k in ['full_number', 'number', 'phone', 'no_plus_number', 'order_id', 'id']:
+            v = d.get(k)
+            if v is not None:
+                possible_nums.append(str(v).replace("+", "").strip())
+        if not possible_nums:
+            return True
+        for num in possible_nums:
+            if clean_phone and clean_phone in num:
+                return True
+            if str_order_id and str_order_id in num:
+                return True
+        return False
+
+    if isinstance(res, (str, int)) and str(res).strip():
+        return str(res).strip()
+
+    if isinstance(res, dict):
+        container = None
+        for key in ["data", "result", "messages", "orders", "sms"]:
+            val = res.get(key)
+            if val is not None:
+                if isinstance(val, (list, dict)):
+                    container = val
+                    break
+                elif isinstance(val, (str, int)) and str(val).strip() and key in ['code', 'otp', 'sms', 'message']:
+                    return str(val).strip()
+        
+        items = container if container is not None else res
+
         if isinstance(items, list):
             for item in items:
                 if isinstance(item, dict):
-                    item_num = str(item.get("full_number", "")) or str(item.get("number", "")) or str(item.get("phone", "")) or str(item.get("no_plus_number", ""))
-                    if not item_num or clean_phone in item_num or str(order_id) in item_num:
-                        code = item.get("code") or item.get("sms") or item.get("otp") or item.get("message") or item.get("text")
-                        if code:
-                            return str(code)
-                elif isinstance(item, str) and len(item) > 0:
-                    return item
+                    if matches_target(item):
+                        c = get_code_from_dict(item)
+                        if c:
+                            return c
+                elif isinstance(item, (str, int)) and str(item).strip():
+                    return str(item).strip()
         elif isinstance(items, dict):
-            code = items.get("code") or items.get("sms") or items.get("otp") or items.get("message") or items.get("text")
-            if code:
-                return str(code)
-            for k, v in items.items():
-                if k in ['code', 'sms', 'otp', 'message', 'text'] and v:
-                    return str(v)
-    except Exception:
-        pass
+            if matches_target(items):
+                c = get_code_from_dict(items)
+                if c:
+                    return c
+            c = get_code_from_dict(items)
+            if c:
+                return c
+
     return None
 
 def voltx_check_sms(phone_num, order_id):
+    """Fast, optimized SMS check function"""
     api_key = get_setting('number_api_key')
     base_url = get_setting('api_base_url') or "https://api.2oo9.cloud/MXS47FLFX0U/tnevs/@public/api"
+    getmsg_setting = get_setting('getmsg_url')
     
     headers = {
         "mauthapi": api_key,
@@ -378,46 +456,111 @@ def voltx_check_sms(phone_num, order_id):
     }
     
     clean_phone = str(phone_num).replace("+", "").strip()
+    clean_order_id = str(order_id).replace("+", "").strip() if order_id else clean_phone
     
-    endpoints = [
+    endpoints = []
+    if getmsg_setting and getmsg_setting.strip():
+        endpoints.append(getmsg_setting.strip())
+    
+    default_endpoints = [
         f"{base_url.rstrip('/')}/success-otp",
-        f"{base_url.rstrip('/')}/getmsg",
-        f"{base_url.rstrip('/')}/check-sms",
-        get_setting('getmsg_url')
+        f"{base_url.rstrip('/')}/getmsg"
     ]
-    
+    for ep in default_endpoints:
+        if ep not in endpoints:
+            endpoints.append(ep)
+            
     for url in endpoints:
         if not url:
             continue
-        for param_key in ['number', 'phone', 'id', 'order_id']:
+        clean_url = url.split('?')[0]
+        
+        # 1. Try GET query params
+        for p_key, p_val in [('number', clean_phone), ('id', clean_order_id), ('phone', clean_phone)]:
             try:
-                r = requests.get(f"{url.split('?')[0]}?{param_key}={clean_phone if param_key in ['number','phone'] else order_id}", headers=headers, timeout=6)
-                res = r.json()
-                code = extract_otp_from_response(res, clean_phone, order_id)
-                if code:
-                    return "RECEIVED", str(code)
+                r = requests.get(f"{clean_url}?{p_key}={p_val}", headers=headers, timeout=3)
+                if r.status_code == 200:
+                    code = extract_otp_from_response(r.json(), clean_phone, clean_order_id)
+                    if code:
+                        return "RECEIVED", code
             except Exception:
                 pass
                 
-        for payload in [
-            {"number": clean_phone},
-            {"phone": clean_phone},
-            {"id": order_id},
-            {"order_id": order_id},
-            {"number": clean_phone, "id": order_id}
-        ]:
-            try:
-                r = requests.post(url.split('?')[0], json=payload, headers=headers, timeout=6)
-                res = r.json()
-                code = extract_otp_from_response(res, clean_phone, order_id)
+        # 2. Try POST payload
+        try:
+            r = requests.post(clean_url, json={"number": clean_phone, "id": clean_order_id}, headers=headers, timeout=3)
+            if r.status_code == 200:
+                code = extract_otp_from_response(r.json(), clean_phone, clean_order_id)
                 if code:
-                    return "RECEIVED", str(code)
-            except Exception:
-                pass
-                
+                    return "RECEIVED", code
+        except Exception:
+            pass
+
     return "WAITING", None
 
 # ----------------- 🔄 AUTO OTP POLLING & CLOUD SYNC THREAD -----------------
+def check_single_active_order(order):
+    db_id, user_id, order_id, phone_num, service_name, c_code = order
+    status, otp_code = voltx_check_sms(phone_num, order_id)
+
+    if status == "RECEIVED" and otp_code:
+        otp_reward_val = float(get_setting('otp_reward') or 0.10)
+        
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE active_orders SET status='COMPLETED', last_code=? WHERE id=?", (otp_code, db_id))
+            cursor.execute("UPDATE users SET balance = balance + ?, reward_balance = reward_balance + ?, otp_count = otp_count + 1 WHERE user_id=?", (otp_reward_val, otp_reward_val, user_id))
+            cursor.execute("SELECT balance, reward_balance FROM users WHERE user_id=?", (user_id,))
+            row_user = cursor.fetchone()
+            new_bal = row_user[0] if row_user else 0.0
+            new_rew_bal = row_user[1] if row_user and len(row_user) > 1 else 0.0
+            
+            cursor.execute("SELECT country_flag FROM countries WHERE service_name=? AND country_code=? LIMIT 1", (service_name, c_code))
+            flag_row = cursor.fetchone()
+            c_flag = flag_row[0] if flag_row else "🇺🇿"
+            conn.commit()
+
+        backup_db_to_telegram() # Auto Cloud Sync
+
+        # 1. Send Direct User Notification
+        user_text = (
+            f"🎉 <b>NEW OTP RECEIVED!</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"{c_flag} <b>Number:</b> <code>{phone_num}</code>\n"
+            f"📘 <b>OTP Code:</b> <code>{otp_code}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"🎁 <b>OTP Reward Credited: +{otp_reward_val:.2f} BDT</b>\n"
+            f"💰 <b>Reward Balance: {new_rew_bal:.2f} BDT</b>\n"
+            f"💼 <b>Total Balance: {new_bal:.2f} BDT</b>\n\n"
+            f"👉 <i>(কোডের ওপর টাচ করলেই অটোমেটিক কপি হয়ে যাবে!)</i>"
+        )
+        try:
+            bot.send_message(user_id, user_text)
+        except Exception:
+            pass
+
+        # 2. Automatically Broadcast Live OTP to Group
+        otp_group = get_setting('otp_group_id') or "@otpreciverpro"
+        group_text = (
+            f"🔔 <b>LIVE OTP TRAFFIC!</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"⚙️ <b>Service:</b> {service_name}\n"
+            f"{c_flag} <b>Number:</b> <code>{phone_num}</code>\n"
+            f"🔑 <b>OTP Code:</b> <code>{otp_code}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"🤖 <b>Bot:</b> @{BOT_USERNAME}"
+        )
+        try:
+            bot.send_message(otp_group, group_text)
+        except Exception as e:
+            print(f"Group broadcast error: {e}")
+
+    elif status == "CANCELLED":
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE active_orders SET status='CANCELLED' WHERE id=?", (db_id,))
+            conn.commit()
+
 def auto_otp_checker_loop():
     print("🚀 Auto OTP Checker, Reward & Group Broadcaster Started...")
     while True:
@@ -427,72 +570,15 @@ def auto_otp_checker_loop():
                 cursor.execute("SELECT id, user_id, order_id, phone_number, service, country FROM active_orders WHERE status='WAITING'")
                 active_orders = cursor.fetchall()
 
-            for order in active_orders:
-                db_id, user_id, order_id, phone_num, service_name, c_code = order
-                status, otp_code = voltx_check_sms(phone_num, order_id)
-
-                if status == "RECEIVED" and otp_code:
-                    otp_reward_val = float(get_setting('otp_reward') or 0.10)
-                    
-                    with get_db() as conn:
-                        cursor = conn.cursor()
-                        cursor.execute("UPDATE active_orders SET status='COMPLETED', last_code=? WHERE id=?", (otp_code, db_id))
-                        cursor.execute("UPDATE users SET balance = balance + ?, reward_balance = reward_balance + ?, otp_count = otp_count + 1 WHERE user_id=?", (otp_reward_val, otp_reward_val, user_id))
-                        cursor.execute("SELECT balance, reward_balance FROM users WHERE user_id=?", (user_id,))
-                        row_user = cursor.fetchone()
-                        new_bal = row_user[0] if row_user else 0.0
-                        new_rew_bal = row_user[1] if row_user and len(row_user) > 1 else 0.0
-                        
-                        cursor.execute("SELECT country_flag FROM countries WHERE service_name=? AND country_code=? LIMIT 1", (service_name, c_code))
-                        flag_row = cursor.fetchone()
-                        c_flag = flag_row[0] if flag_row else "🇺🇿"
-                        conn.commit()
-
-                    backup_db_to_telegram() # Auto Cloud Sync
-
-                    # 1. Send Direct User Notification
-                    user_text = (
-                        f"🎉 <b>NEW OTP RECEIVED!</b>\n"
-                        f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"{c_flag} <b>Number:</b> <code>{phone_num}</code>\n"
-                        f"📘 <b>OTP Code:</b> <code>{otp_code}</code>\n"
-                        f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"🎁 <b>OTP Reward Credited: +{otp_reward_val:.2f} BDT</b>\n"
-                        f"💰 <b>Reward Balance: {new_rew_bal:.2f} BDT</b>\n"
-                        f"💼 <b>Total Balance: {new_bal:.2f} BDT</b>\n\n"
-                        f"👉 <i>(কোডের ওপর টাচ করলেই অটোমেটিক কপি হয়ে যাবে!)</i>"
-                    )
-                    try:
-                        bot.send_message(user_id, user_text)
-                    except Exception:
-                        pass
-
-                    # 2. Automatically Broadcast Live OTP to Group
-                    otp_group = get_setting('otp_group_id') or "@otpreciverpro"
-                    group_text = (
-                        f"🔔 <b>LIVE OTP TRAFFIC!</b>\n"
-                        f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"⚙️ <b>Service:</b> {service_name}\n"
-                        f"{c_flag} <b>Number:</b> <code>{phone_num}</code>\n"
-                        f"🔑 <b>OTP Code:</b> <code>{otp_code}</code>\n"
-                        f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"🤖 <b>Bot:</b> @{bot.get_me().username}"
-                    )
-                    try:
-                        bot.send_message(otp_group, group_text)
-                    except Exception as e:
-                        print(f"Group broadcast error: {e}")
-
-                elif status == "CANCELLED":
-                    with get_db() as conn:
-                        cursor = conn.cursor()
-                        cursor.execute("UPDATE active_orders SET status='CANCELLED' WHERE id=?", (db_id,))
-                        conn.commit()
+            if active_orders:
+                # Check active orders in parallel with ThreadPoolExecutor
+                with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                    executor.map(check_single_active_order, active_orders)
 
         except Exception as e:
             print(f"Error in OTP Checker Loop: {e}")
 
-        time.sleep(5)
+        time.sleep(3)
 
 threading.Thread(target=auto_otp_checker_loop, daemon=True).start()
 
@@ -612,18 +698,22 @@ def buy_number_click(call):
         c_name = c_row[0] if c_row else "Uzbekistan"
         c_flag = c_row[1] if c_row else "🇺🇿"
 
+    # Fast parallel execution using ThreadPoolExecutor
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [executor.submit(voltx_get_number, range_id) for _ in range(4)]
+        results = [f.result() for f in concurrent.futures.as_completed(futures)]
+
     assigned_numbers = []
-    for _ in range(4):
-        success, order_id_or_err, phone_num = voltx_get_number(range_id)
-        if success and phone_num:
-            assigned_numbers.append(phone_num)
-            with get_db() as conn:
-                cursor = conn.cursor()
+    with get_db() as conn:
+        cursor = conn.cursor()
+        for success, order_id_or_err, phone_num in results:
+            if success and phone_num:
+                assigned_numbers.append(phone_num)
                 cursor.execute(
                     "INSERT INTO active_orders (user_id, order_id, phone_number, service, country) VALUES (?, ?, ?, ?, ?)",
                     (user_id, order_id_or_err, phone_num, service_name, c_code)
                 )
-                conn.commit()
+        conn.commit()
 
     if not assigned_numbers:
         bot.send_message(call.message.chat.id, f"❌ <b>নম্বর আনা সম্ভব হয়নি!</b>\n\nবর্তমানে নম্বর স্টকে নেই।")
@@ -981,8 +1071,7 @@ def profile_cmd(message):
     joined = row[3] if row and len(row) > 3 else "2026-06-27"
     otps = row[4] if row and len(row) > 4 else 0
     usdt = bal / 125.0
-    bot_uname = bot.get_me().username
-    ref_link = f"https://t.me/{bot_uname}?start={user_id}"
+    ref_link = f"https://t.me/{BOT_USERNAME}?start={user_id}"
 
     text = (
         f"👤 <b>My Profile</b>\n\n"
