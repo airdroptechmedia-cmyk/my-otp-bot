@@ -8,6 +8,7 @@ import io
 import datetime
 import openpyxl
 import concurrent.futures
+import re
 from flask import Flask
 from telebot import types
 from contextlib import contextmanager
@@ -150,7 +151,7 @@ def init_db():
         # Users Table
         cursor.execute('''CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
-            balance REAL DEFAULT 6.00,
+            balance REAL DEFAULT 0.00,
             reward_balance REAL DEFAULT 0.00,
             referrals INTEGER DEFAULT 0,
             referred_by INTEGER,
@@ -247,7 +248,7 @@ def init_db():
             value TEXT
         )''')
         
-        # Default Settings (Supports API 1: VoltXSMS & API 2: StexSMS)
+        # Default Settings (API 1: VoltXSMS & API 2: StexSMS)
         defaults = {
             'bkash_num': '01625212609',
             'nagad_num': '01625212609',
@@ -257,9 +258,10 @@ def init_db():
             'deposit_bonus': '5',
             'refer_reward': '0.11',
             'otp_reward': '0.10',
+            'signup_bonus': '0.00',  # Configurable Joining Bonus
             
             # API 1 (VoltX SMS)
-            'number_api_key': 'M9NA8XX44CT',
+            'number_api_key': 'M7D4REK5Y06',
             'api_base_url': 'https://api.2oo9.cloud/MXS47FLFX0U/tnevs/@public/api',
             'getnum_url': 'https://api.2oo9.cloud/MXS47FLFX0U/tnevs/@public/api/getnum',
             'getmsg_url': 'https://api.2oo9.cloud/MXS47FLFX0U/tnevs/@public/api/success-otp',
@@ -277,6 +279,10 @@ def init_db():
         }
         for k, v in defaults.items():
             cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (k, v))
+
+        # Force update latest API Keys if old defaults exist
+        cursor.execute("UPDATE settings SET value='M7D4REK5Y06' WHERE key='number_api_key' AND (value='M9NA8XX44CT' OR value='')")
+        cursor.execute("UPDATE settings SET value='M6SB7HZXXIX' WHERE key='number_api_key_2' AND value=''")
             
         cursor.execute("SELECT COUNT(*) FROM countries")
         if cursor.fetchone()[0] == 0:
@@ -361,7 +367,7 @@ def voltx_get_number_from_api(range_id, api_source="API1"):
         api_key = get_setting('number_api_key_2') or "M6SB7HZXXIX"
         url = get_setting('getnum_url_2') or "https://api.2oo9.cloud/MXS47FLFX0U/tnevs/@public/api/getnum"
     else:
-        api_key = get_setting('number_api_key') or "M9NA8XX44CT"
+        api_key = get_setting('number_api_key') or "M7D4REK5Y06"
         url = get_setting('getnum_url') or "https://api.2oo9.cloud/MXS47FLFX0U/tnevs/@public/api/getnum"
         
     headers = {
@@ -371,7 +377,7 @@ def voltx_get_number_from_api(range_id, api_source="API1"):
     payload = {"rid": str(range_id)}
     
     try:
-        r = requests.post(url, json=payload, headers=headers, timeout=8)
+        r = requests.post(url, json=payload, headers=headers, timeout=6)
         res = r.json()
         
         meta = res.get("meta", {})
@@ -379,7 +385,7 @@ def voltx_get_number_from_api(range_id, api_source="API1"):
         
         if code == 200 and res.get("data"):
             data = res["data"]
-            phone_num = data.get("full_number")
+            phone_num = data.get("full_number") or data.get("no_plus_number") or data.get("number")
             order_id = data.get("no_plus_number") or phone_num
             return True, order_id, phone_num, api_source
         elif code == 2946 or meta.get("status") == "not_found":
@@ -391,20 +397,36 @@ def voltx_get_number_from_api(range_id, api_source="API1"):
         return False, f"⚠️ সংযোগ বিচ্ছিন্ন: {e}", None, api_source
 
 def extract_otp_from_response(res, clean_phone, order_id):
-    """Robust OTP Extractor - Handles all 2oo9.cloud response structures safely"""
+    """Robust OTP Extractor - Handles all 2oo9.cloud response structures and regex extracts digits safely"""
     if not res:
         return None
     
     clean_phone = str(clean_phone).replace("+", "").strip() if clean_phone else ""
     str_order_id = str(order_id).replace("+", "").strip() if order_id else ""
     
+    def extract_code_from_str(s):
+        if not s or not isinstance(s, (str, int)):
+            return None
+        s_str = str(s).strip()
+        if not s_str or s_str.lower() in ["none", "null", "waiting", "pending", "false"]:
+            return None
+        # Check if the string itself is purely 4 to 8 digits
+        if s_str.isdigit() and 4 <= len(s_str) <= 8:
+            return s_str
+        # Extract 4-8 digit OTP code via regex from raw message text (e.g. "Your code is 123456")
+        matches = re.findall(r'\b\d{4,8}\b', s_str)
+        if matches:
+            return matches[0]
+        return s_str if len(s_str) <= 12 else None
+
     def get_code_from_dict(d):
         if not isinstance(d, dict):
             return None
-        for field in ['code', 'otp', 'sms', 'message', 'text', 'last_code', 'msg']:
+        for field in ['otp', 'code', 'last_code', 'sms', 'message', 'text', 'msg']:
             val = d.get(field)
-            if val is not None and str(val).strip() != "":
-                return str(val).strip()
+            extracted = extract_code_from_str(val)
+            if extracted:
+                return extracted
         return None
 
     def matches_target(d):
@@ -418,43 +440,41 @@ def extract_otp_from_response(res, clean_phone, order_id):
         if not possible_nums:
             return True
         for num in possible_nums:
-            if clean_phone and clean_phone in num:
+            if clean_phone and (clean_phone in num or num in clean_phone):
                 return True
-            if str_order_id and str_order_id in num:
+            if str_order_id and (str_order_id in num or num in str_order_id):
                 return True
         return False
 
-    if isinstance(res, (str, int)) and str(res).strip():
-        return str(res).strip()
+    if isinstance(res, (str, int)):
+        return extract_code_from_str(res)
 
     if isinstance(res, dict):
-        container = None
         for key in ["data", "result", "messages", "orders", "sms"]:
             val = res.get(key)
             if val is not None:
-                if isinstance(val, (list, dict)):
-                    container = val
-                    break
-                elif isinstance(val, (str, int)) and str(val).strip() and key in ['code', 'otp', 'sms', 'message']:
-                    return str(val).strip()
-        
-        items = container if container is not None else res
-
-        if isinstance(items, list):
-            for item in items:
-                if isinstance(item, dict):
-                    if matches_target(item):
-                        c = get_code_from_dict(item)
+                if isinstance(val, list):
+                    for item in val:
+                        if isinstance(item, dict) and matches_target(item):
+                            c = get_code_from_dict(item)
+                            if c:
+                                return c
+                        elif isinstance(item, (str, int)):
+                            c = extract_code_from_str(item)
+                            if c:
+                                return c
+                elif isinstance(val, dict):
+                    if matches_target(val):
+                        c = get_code_from_dict(val)
                         if c:
                             return c
-                elif isinstance(item, (str, int)) and str(item).strip():
-                    return str(item).strip()
-        elif isinstance(items, dict):
-            if matches_target(items):
-                c = get_code_from_dict(items)
-                if c:
-                    return c
-            c = get_code_from_dict(items)
+                elif isinstance(val, (str, int)):
+                    c = extract_code_from_str(val)
+                    if c:
+                        return c
+
+        if matches_target(res):
+            c = get_code_from_dict(res)
             if c:
                 return c
 
@@ -467,7 +487,7 @@ def voltx_check_sms(phone_num, order_id, api_source="API1"):
         base_url = get_setting('api_base_url_2') or "https://api.2oo9.cloud/MXS47FLFX0U/tnevs/@public/api"
         getmsg_setting = get_setting('getmsg_url_2')
     else:
-        api_key = get_setting('number_api_key') or "M9NA8XX44CT"
+        api_key = get_setting('number_api_key') or "M7D4REK5Y06"
         base_url = get_setting('api_base_url') or "https://api.2oo9.cloud/MXS47FLFX0U/tnevs/@public/api"
         getmsg_setting = get_setting('getmsg_url')
     
@@ -496,26 +516,32 @@ def voltx_check_sms(phone_num, order_id, api_source="API1"):
             continue
         clean_url = url.split('?')[0]
         
-        # 1. Try GET query params
-        for p_key, p_val in [('number', clean_phone), ('id', clean_order_id), ('phone', clean_phone)]:
-            try:
-                r = requests.get(f"{clean_url}?{p_key}={p_val}", headers=headers, timeout=3)
-                if r.status_code == 200:
-                    code = extract_otp_from_response(r.json(), clean_phone, clean_order_id)
-                    if code:
-                        return "RECEIVED", code
-            except Exception:
-                pass
-                
-        # 2. Try POST payload
+        # 1. POST payload check
         try:
-            r = requests.post(clean_url, json={"number": clean_phone, "id": clean_order_id}, headers=headers, timeout=3)
+            payload = {
+                "number": clean_phone,
+                "no_plus_number": clean_phone,
+                "full_number": f"+{clean_phone}",
+                "id": clean_order_id
+            }
+            r = requests.post(clean_url, json=payload, headers=headers, timeout=6)
             if r.status_code == 200:
                 code = extract_otp_from_response(r.json(), clean_phone, clean_order_id)
                 if code:
                     return "RECEIVED", code
         except Exception:
             pass
+
+        # 2. GET query params check
+        for p_key, p_val in [('number', clean_phone), ('id', clean_order_id), ('phone', clean_phone)]:
+            try:
+                r = requests.get(f"{clean_url}?{p_key}={p_val}", headers=headers, timeout=6)
+                if r.status_code == 200:
+                    code = extract_otp_from_response(r.json(), clean_phone, clean_order_id)
+                    if code:
+                        return "RECEIVED", code
+            except Exception:
+                pass
 
     return "WAITING", None
 
@@ -592,7 +618,7 @@ def auto_otp_checker_loop():
                 active_orders = cursor.fetchall()
 
             if active_orders:
-                with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
                     executor.map(check_single_active_order, active_orders)
 
         except Exception as e:
@@ -625,13 +651,15 @@ def start_cmd(message):
     args = message.text.split()
     referred_by = int(args[1]) if len(args) > 1 and args[1].isdigit() and int(args[1]) != user_id else None
 
+    signup_bonus = float(get_setting('signup_bonus') or 0.00)
+
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT user_id FROM users WHERE user_id=?", (user_id,))
         user = cursor.fetchone()
 
         if not user:
-            cursor.execute("INSERT INTO users (user_id, balance, referred_by) VALUES (?, 6.00, ?)", (user_id, referred_by))
+            cursor.execute("INSERT INTO users (user_id, balance, referred_by) VALUES (?, ?, ?)", (user_id, signup_bonus, referred_by))
             if referred_by:
                 cursor.execute("UPDATE users SET referrals = referrals + 1 WHERE user_id=?", (referred_by,))
             conn.commit()
@@ -648,7 +676,7 @@ def numbers_cmd(message):
 
     with get_db() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT DISTINCT service_name, service_code FROM countries")
+        cursor.execute("SELECT DISTINCT service_name FROM countries")
         services = cursor.fetchall()
 
     if not services:
@@ -657,11 +685,12 @@ def numbers_cmd(message):
 
     markup = types.InlineKeyboardMarkup(row_width=2)
     for s in services:
-        markup.add(types.InlineKeyboardButton(f"⚙️ {s[0]}", callback_data=f"usr_srv_{s[0]}"))
+        srv_name = s[0]
+        markup.add(types.InlineKeyboardButton(f"⚙️ {srv_name}", callback_data=f"usr_srv|{srv_name}"))
 
     bot.send_message(message.chat.id, "⚙️ <b>Select a Service for OTP:</b>", reply_markup=markup)
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("usr_srv_"))
+@bot.callback_query_handler(func=lambda call: call.data.startswith("usr_srv|"))
 def user_service_click(call):
     if not is_user_joined(call.from_user.id):
         bot.answer_callback_query(call.id, "⚠️ আগে আমাদের চ্যানেলে জয়েন করুন!", show_alert=True)
@@ -669,7 +698,8 @@ def user_service_click(call):
         return
 
     bot.answer_callback_query(call.id)
-    service_name = call.data.split("_")[2]
+    parts = call.data.split("|")
+    service_name = parts[1]
     
     with get_db() as conn:
         cursor = conn.cursor()
@@ -680,7 +710,8 @@ def user_service_click(call):
         for c in countries:
             c_name, c_flag, c_code, s_code = c
             btn_text = f"{c_flag} {c_name} (Dual API)"
-            markup.add(types.InlineKeyboardButton(btn_text, callback_data=f"buy_{s_code}_{c_code}_{service_name}"))
+            # Safe Pipe delimiter so callback query string never crashes on underscores
+            markup.add(types.InlineKeyboardButton(btn_text, callback_data=f"buy|{s_code}|{c_code}|{service_name}"))
 
     markup.add(types.InlineKeyboardButton("⬅️ Back To Services", callback_data="back_to_services"))
     bot.edit_message_text(f"🌍 <b>Select country for {service_name}:</b> ⬇️", call.message.chat.id, call.message.message_id, reply_markup=markup)
@@ -695,19 +726,24 @@ def back_to_services_cb(call):
 
     markup = types.InlineKeyboardMarkup(row_width=2)
     for s in services:
-        markup.add(types.InlineKeyboardButton(f"⚙️ {s[0]}", callback_data=f"usr_srv_{s[0]}"))
+        srv_name = s[0]
+        markup.add(types.InlineKeyboardButton(f"⚙️ {srv_name}", callback_data=f"usr_srv|{srv_name}"))
 
     bot.edit_message_text("⚙️ <b>Select a Service:</b>", call.message.chat.id, call.message.message_id, reply_markup=markup)
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("buy_"))
+@bot.callback_query_handler(func=lambda call: call.data.startswith("buy|"))
 def buy_number_click(call):
     if not is_user_joined(call.from_user.id):
         bot.answer_callback_query(call.id, "⚠️ আগে আমাদের চ্যানেলে জয়েন করুন!", show_alert=True)
         send_force_join_msg(call.message.chat.id)
         return
 
-    bot.answer_callback_query(call.id, "৪টি নম্বর আনা হচ্ছে...", show_alert=False)
-    _, range_id, c_code, service_name = call.data.split("_")
+    bot.answer_callback_query(call.id, "⌛ DUAL API (VoltXSMS + StexSMS) থেকে ৪টি নম্বর আনা হচ্ছে...", show_alert=False)
+    
+    parts = call.data.split("|")
+    range_id = parts[1]
+    c_code = parts[2]
+    service_name = parts[3]
     user_id = call.from_user.id
 
     with get_db() as conn:
@@ -718,9 +754,9 @@ def buy_number_click(call):
         c_name = c_row[0] if c_row else "Uzbekistan"
         c_flag = c_row[1] if c_row else "🇺🇿"
 
-    # DUAL API FETCHING: 2 numbers from API1 (VoltXSMS) and 2 numbers from API2 (StexSMS)
+    # DUAL API FAST FETCHING: Concurrent requests from API 1 and API 2
     results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
         futures = [
             executor.submit(voltx_get_number_from_api, range_id, "API1"),
             executor.submit(voltx_get_number_from_api, range_id, "API1"),
@@ -741,7 +777,7 @@ def buy_number_click(call):
                 )
         conn.commit()
 
-    # Fallback: If less than 4 numbers were obtained, try filling remaining from available API
+    # Fast Fallback: If numbers are less than 4, fill remaining from available API
     if len(assigned_numbers) < 4:
         needed = 4 - len(assigned_numbers)
         with concurrent.futures.ThreadPoolExecutor(max_workers=needed) as executor:
@@ -759,27 +795,37 @@ def buy_number_click(call):
                         )
                 conn.commit()
 
+    otp_group_link = get_setting('otp_group_link') or 'https://t.me/otpreciverpro'
+    otp_reward_val = float(get_setting('otp_reward') or 0.10)
+
+    # Always attach interactive action buttons even if stock is temporarily empty
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup.add(types.InlineKeyboardButton("👀 OTP GROUP ↗️", url=otp_group_link))
+    markup.add(
+        types.InlineKeyboardButton("⚙️ Next Number", callback_data=f"buy|{range_id}|{c_code}|{service_name}"),
+        types.InlineKeyboardButton("🌐 Select Country", callback_data=f"usr_srv|{service_name}")
+    )
+
     if not assigned_numbers:
-        bot.send_message(call.message.chat.id, f"❌ <b>নম্বর আনা সম্ভব হয়নি!</b>\n\nবর্তমানে DUAL API-তে নম্বর স্টকে নেই।")
+        err_text = (
+            f"❌ <b>নম্বর আনা সম্ভব হয়নি!</b>\n\n"
+            f"বর্তমানে {c_flag} <b>{c_name} ({service_name})</b> এর জন্য DUAL API-তে নম্বর স্টকে নেই।\n\n"
+            f"👇 <i>আবার চেষ্টা করতে বা কান্ট্রি চেঞ্জ করতে নিচের বাটন ব্যবহার করুন:</i>"
+        )
+        try:
+            bot.edit_message_text(err_text, call.message.chat.id, call.message.message_id, reply_markup=markup)
+        except Exception:
+            bot.send_message(call.message.chat.id, err_text, reply_markup=markup)
         return
 
     num_str_list = "\n".join([f"{c_flag} 📋 <code>{p}</code>" for p in assigned_numbers])
-    otp_group_link = get_setting('otp_group_link') or 'https://t.me/otpreciverpro'
 
-    otp_reward_val = float(get_setting('otp_reward') or 0.10)
     text = (
         f"{c_flag} <b>{c_name}</b> 📘 <b>Number Assigned (Dual API)</b>\n\n"
         f"💰 <b>Per OTP Reward : {otp_reward_val:.2f} BDT</b>\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"{num_str_list}\n\n"
         f"⏳ <i>Waiting for OTP... (অটোমেটিক চেক হচ্ছে)</i>"
-    )
-
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    markup.add(types.InlineKeyboardButton("👀 OTP GROUP ↗️", url=otp_group_link))
-    markup.add(
-        types.InlineKeyboardButton("⚙️ Next Number", callback_data=f"buy_{range_id}_{c_code}_{service_name}"),
-        types.InlineKeyboardButton("🌐 Country", callback_data=f"usr_srv_{service_name}")
     )
 
     try:
@@ -1109,7 +1155,7 @@ def profile_cmd(message):
         cursor.execute("SELECT balance, reward_balance, referrals, joined_date, otp_count FROM users WHERE user_id=?", (user_id,))
         row = cursor.fetchone()
 
-    bal = row[0] if row else 6.00
+    bal = row[0] if row else 0.00
     rew_bal = row[1] if row and len(row) > 1 else 0.00
     refs = row[2] if row and len(row) > 2 else 0
     joined = row[3] if row and len(row) > 3 else "2026-06-27"
@@ -1375,14 +1421,26 @@ def admin_cb_handler(call):
         ref = get_setting('refer_reward')
         dep_b = get_setting('deposit_bonus')
         otp_b = get_setting('otp_reward')
-        text = f"🎁 <b>Edit Bonuses & Rewards</b>\n\nRefer Reward: {ref} BDT\nDeposit Bonus: {dep_b}%\nOTP Reward: {otp_b} BDT"
+        sgn_b = get_setting('signup_bonus') or "0.00"
+        text = (
+            f"🎁 <b>Edit Bonuses & Rewards</b>\n\n"
+            f"Signup Bonus: {sgn_b} BDT\n"
+            f"Refer Reward: {ref} BDT\n"
+            f"Deposit Bonus: {dep_b}%\n"
+            f"OTP Reward: {otp_b} BDT"
+        )
         markup = types.InlineKeyboardMarkup(row_width=1)
         markup.add(
-            types.InlineKeyboardButton("🎁 Change Refer Reward", callback_data="set_bonus_refer"),
+            types.InlineKeyboardButton("🎁 Change Signup Joining Bonus", callback_data="set_bonus_signup"),
+            types.InlineKeyboardButton("🤝 Change Refer Reward", callback_data="set_bonus_refer"),
             types.InlineKeyboardButton("💵 Change Deposit Bonus %", callback_data="set_bonus_dep"),
             types.InlineKeyboardButton("🎉 Change Per-OTP Reward", callback_data="set_bonus_otpreward")
         )
         bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup)
+
+    elif data == "set_bonus_signup":
+        set_user_state(user_id, "adm_step", "set_setting:signup_bonus")
+        bot.send_message(call.message.chat.id, "✏️ <b>নতুন ইউজার জয়েন করলে কত টাকা বোনাস দিতে চান লিখে পাঠান (যেমন: 0.00 বা 6.00):</b>")
 
     elif data == "set_bonus_otpreward":
         set_user_state(user_id, "adm_step", "set_setting:otp_reward")
