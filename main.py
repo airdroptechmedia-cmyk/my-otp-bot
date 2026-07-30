@@ -17,7 +17,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "OTP RECIVER PRO BOT is Alive 24/7!"
+    return "OTP RECIVER PRO BOT with DUAL API is Alive 24/7!"
 
 def run_flask():
     try:
@@ -85,7 +85,6 @@ def backup_db_to_telegram(force=False):
     """Safely backs up SQLite DB to Telegram Cloud (Admin Chat)"""
     global LAST_BACKUP_TIME
     now = time.time()
-    # Throttle non-forced backups to at most once every 10 seconds to avoid spamming
     if not force and (now - LAST_BACKUP_TIME < 10):
         return
         
@@ -163,7 +162,7 @@ def init_db():
         except Exception:
             pass
         
-        # Active API Number Orders Table
+        # Active API Number Orders Table (With api_source for Dual API)
         cursor.execute('''CREATE TABLE IF NOT EXISTS active_orders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER,
@@ -173,8 +172,13 @@ def init_db():
             country TEXT,
             status TEXT DEFAULT 'WAITING',
             last_code TEXT DEFAULT NULL,
+            api_source TEXT DEFAULT 'API1',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )''')
+        try:
+            cursor.execute("ALTER TABLE active_orders ADD COLUMN api_source TEXT DEFAULT 'API1'")
+        except Exception:
+            pass
         
         # Purchases History Table
         cursor.execute('''CREATE TABLE IF NOT EXISTS purchases (
@@ -243,7 +247,7 @@ def init_db():
             value TEXT
         )''')
         
-        # Default Settings
+        # Default Settings (Supports API 1: VoltXSMS & API 2: StexSMS)
         defaults = {
             'bkash_num': '01625212609',
             'nagad_num': '01625212609',
@@ -253,10 +257,19 @@ def init_db():
             'deposit_bonus': '5',
             'refer_reward': '0.11',
             'otp_reward': '0.10',
+            
+            # API 1 (VoltX SMS)
             'number_api_key': 'M9NA8XX44CT',
             'api_base_url': 'https://api.2oo9.cloud/MXS47FLFX0U/tnevs/@public/api',
             'getnum_url': 'https://api.2oo9.cloud/MXS47FLFX0U/tnevs/@public/api/getnum',
             'getmsg_url': 'https://api.2oo9.cloud/MXS47FLFX0U/tnevs/@public/api/success-otp',
+            
+            # API 2 (Stex SMS)
+            'number_api_key_2': 'M6SB7HZXXIX',
+            'api_base_url_2': 'https://api.2oo9.cloud/MXS47FLFX0U/tnevs/@public/api',
+            'getnum_url_2': 'https://api.2oo9.cloud/MXS47FLFX0U/tnevs/@public/api/getnum',
+            'getmsg_url_2': 'https://api.2oo9.cloud/MXS47FLFX0U/tnevs/@public/api/success-otp',
+            
             'traffic_url': 'https://api.2oo9.cloud/MXS47FLFX0U/tnevs/@public/api/console',
             'force_channels': '',
             'otp_group_id': '@otpreciverpro',
@@ -341,11 +354,16 @@ def check_join_verify_cb(call):
     else:
         bot.answer_callback_query(call.id, "❌ আপনি এখনো সবগুলো চ্যানেলে জয়েন করেননি! আগে জয়েন করুন।", show_alert=True)
 
-# ----------------- VOLTXSMS API ENGINE -----------------
-def voltx_get_number(range_id):
-    api_key = get_setting('number_api_key')
-    url = get_setting('getnum_url') or "https://api.2oo9.cloud/MXS47FLFX0U/tnevs/@public/api/getnum"
-    
+# ----------------- DUAL SMS API ENGINE (VoltXSMS + StexSMS) -----------------
+def voltx_get_number_from_api(range_id, api_source="API1"):
+    """Generic function to fetch a number from API1 or API2"""
+    if api_source == "API2":
+        api_key = get_setting('number_api_key_2') or "M6SB7HZXXIX"
+        url = get_setting('getnum_url_2') or "https://api.2oo9.cloud/MXS47FLFX0U/tnevs/@public/api/getnum"
+    else:
+        api_key = get_setting('number_api_key') or "M9NA8XX44CT"
+        url = get_setting('getnum_url') or "https://api.2oo9.cloud/MXS47FLFX0U/tnevs/@public/api/getnum"
+        
     headers = {
         "mauthapi": api_key,
         "Content-Type": "application/json"
@@ -363,24 +381,23 @@ def voltx_get_number(range_id):
             data = res["data"]
             phone_num = data.get("full_number")
             order_id = data.get("no_plus_number") or phone_num
-            return True, order_id, phone_num
+            return True, order_id, phone_num, api_source
         elif code == 2946 or meta.get("status") == "not_found":
-            return False, "❌ নম্বর স্টকে নেই!", None
+            return False, "❌ নম্বর স্টকে নেই!", None, api_source
         else:
             msg = res.get("message") or meta.get("status") or "API Error"
-            return False, f"⚠️ API Error: {msg}", None
+            return False, f"⚠️ API Error: {msg}", None, api_source
     except Exception as e:
-        return False, f"⚠️ সংযোগ বিচ্ছিন্ন: {e}", None
+        return False, f"⚠️ সংযোগ বিচ্ছিন্ন: {e}", None, api_source
 
 def extract_otp_from_response(res, clean_phone, order_id):
-    """Robust OTP Extractor - Handles all 2oo9.cloud / VoltX SMS response structures safely"""
+    """Robust OTP Extractor - Handles all 2oo9.cloud response structures safely"""
     if not res:
         return None
     
     clean_phone = str(clean_phone).replace("+", "").strip() if clean_phone else ""
     str_order_id = str(order_id).replace("+", "").strip() if order_id else ""
     
-    # Helper to extract code string from dictionary
     def get_code_from_dict(d):
         if not isinstance(d, dict):
             return None
@@ -390,7 +407,6 @@ def extract_otp_from_response(res, clean_phone, order_id):
                 return str(val).strip()
         return None
 
-    # Helper to check if dictionary matches number or order_id
     def matches_target(d):
         if not isinstance(d, dict):
             return True
@@ -444,11 +460,16 @@ def extract_otp_from_response(res, clean_phone, order_id):
 
     return None
 
-def voltx_check_sms(phone_num, order_id):
-    """Fast, optimized SMS check function"""
-    api_key = get_setting('number_api_key')
-    base_url = get_setting('api_base_url') or "https://api.2oo9.cloud/MXS47FLFX0U/tnevs/@public/api"
-    getmsg_setting = get_setting('getmsg_url')
+def voltx_check_sms(phone_num, order_id, api_source="API1"):
+    """Checks OTP from the correct API source (API1 VoltXSMS or API2 StexSMS)"""
+    if api_source == "API2":
+        api_key = get_setting('number_api_key_2') or "M6SB7HZXXIX"
+        base_url = get_setting('api_base_url_2') or "https://api.2oo9.cloud/MXS47FLFX0U/tnevs/@public/api"
+        getmsg_setting = get_setting('getmsg_url_2')
+    else:
+        api_key = get_setting('number_api_key') or "M9NA8XX44CT"
+        base_url = get_setting('api_base_url') or "https://api.2oo9.cloud/MXS47FLFX0U/tnevs/@public/api"
+        getmsg_setting = get_setting('getmsg_url')
     
     headers = {
         "mauthapi": api_key,
@@ -500,8 +521,8 @@ def voltx_check_sms(phone_num, order_id):
 
 # ----------------- 🔄 AUTO OTP POLLING & CLOUD SYNC THREAD -----------------
 def check_single_active_order(order):
-    db_id, user_id, order_id, phone_num, service_name, c_code = order
-    status, otp_code = voltx_check_sms(phone_num, order_id)
+    db_id, user_id, order_id, phone_num, service_name, c_code, api_source = order
+    status, otp_code = voltx_check_sms(phone_num, order_id, api_source=api_source)
 
     if status == "RECEIVED" and otp_code:
         otp_reward_val = float(get_setting('otp_reward') or 0.10)
@@ -520,7 +541,7 @@ def check_single_active_order(order):
             c_flag = flag_row[0] if flag_row else "🇺🇿"
             conn.commit()
 
-        backup_db_to_telegram() # Auto Cloud Sync
+        backup_db_to_telegram()
 
         # 1. Send Direct User Notification
         user_text = (
@@ -567,11 +588,10 @@ def auto_otp_checker_loop():
         try:
             with get_db() as conn:
                 cursor = conn.cursor()
-                cursor.execute("SELECT id, user_id, order_id, phone_number, service, country FROM active_orders WHERE status='WAITING'")
+                cursor.execute("SELECT id, user_id, order_id, phone_number, service, country, api_source FROM active_orders WHERE status='WAITING'")
                 active_orders = cursor.fetchall()
 
             if active_orders:
-                # Check active orders in parallel with ThreadPoolExecutor
                 with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
                     executor.map(check_single_active_order, active_orders)
 
@@ -619,7 +639,7 @@ def start_cmd(message):
 
     bot.send_message(message.chat.id, f"👋 <b>{BOT_NAME}</b>-এ আপনাকে স্বাগতম!", reply_markup=main_reply_keyboard(user_id))
 
-# ----------------- 📱 AUTOMATED BATCH NUMBER GETTER -----------------
+# ----------------- 📱 AUTOMATED DUAL API BATCH NUMBER GETTER -----------------
 @bot.message_handler(func=lambda msg: msg.text in ["📱 Get Number", "📱 Get Free Number", "📱 NUMBER'S"])
 def numbers_cmd(message):
     if not is_user_joined(message.from_user.id):
@@ -659,7 +679,7 @@ def user_service_click(call):
         markup = types.InlineKeyboardMarkup(row_width=1)
         for c in countries:
             c_name, c_flag, c_code, s_code = c
-            btn_text = f"{c_flag} {c_name} (Auto API)"
+            btn_text = f"{c_flag} {c_name} (Dual API)"
             markup.add(types.InlineKeyboardButton(btn_text, callback_data=f"buy_{s_code}_{c_code}_{service_name}"))
 
     markup.add(types.InlineKeyboardButton("⬅️ Back To Services", callback_data="back_to_services"))
@@ -686,7 +706,7 @@ def buy_number_click(call):
         send_force_join_msg(call.message.chat.id)
         return
 
-    bot.answer_callback_query(call.id, "⌛ API থেকে ৪টি নম্বর নেওয়া হচ্ছে, অপেক্ষা করুন...", show_alert=False)
+    bot.answer_callback_query(call.id, "⌛ DUAL API (VoltXSMS + StexSMS) থেকে ৪টি নম্বর আনা হচ্ছে...", show_alert=False)
     _, range_id, c_code, service_name = call.data.split("_")
     user_id = call.from_user.id
 
@@ -698,25 +718,49 @@ def buy_number_click(call):
         c_name = c_row[0] if c_row else "Uzbekistan"
         c_flag = c_row[1] if c_row else "🇺🇿"
 
-    # Fast parallel execution using ThreadPoolExecutor
+    # DUAL API FETCHING: 2 numbers from API1 (VoltXSMS) and 2 numbers from API2 (StexSMS)
+    results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-        futures = [executor.submit(voltx_get_number, range_id) for _ in range(4)]
+        futures = [
+            executor.submit(voltx_get_number_from_api, range_id, "API1"),
+            executor.submit(voltx_get_number_from_api, range_id, "API1"),
+            executor.submit(voltx_get_number_from_api, range_id, "API2"),
+            executor.submit(voltx_get_number_from_api, range_id, "API2")
+        ]
         results = [f.result() for f in concurrent.futures.as_completed(futures)]
 
     assigned_numbers = []
     with get_db() as conn:
         cursor = conn.cursor()
-        for success, order_id_or_err, phone_num in results:
+        for success, order_id_or_err, phone_num, api_src in results:
             if success and phone_num:
                 assigned_numbers.append(phone_num)
                 cursor.execute(
-                    "INSERT INTO active_orders (user_id, order_id, phone_number, service, country) VALUES (?, ?, ?, ?, ?)",
-                    (user_id, order_id_or_err, phone_num, service_name, c_code)
+                    "INSERT INTO active_orders (user_id, order_id, phone_number, service, country, api_source) VALUES (?, ?, ?, ?, ?, ?)",
+                    (user_id, order_id_or_err, phone_num, service_name, c_code, api_src)
                 )
         conn.commit()
 
+    # Fallback: If less than 4 numbers were obtained, try filling remaining from available API
+    if len(assigned_numbers) < 4:
+        needed = 4 - len(assigned_numbers)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=needed) as executor:
+            fallback_futures = [executor.submit(voltx_get_number_from_api, range_id, "API1") for _ in range(needed)]
+            fallback_results = [f.result() for f in concurrent.futures.as_completed(fallback_futures)]
+            
+            with get_db() as conn:
+                cursor = conn.cursor()
+                for success, order_id_or_err, phone_num, api_src in fallback_results:
+                    if success and phone_num and phone_num not in assigned_numbers:
+                        assigned_numbers.append(phone_num)
+                        cursor.execute(
+                            "INSERT INTO active_orders (user_id, order_id, phone_number, service, country, api_source) VALUES (?, ?, ?, ?, ?, ?)",
+                            (user_id, order_id_or_err, phone_num, service_name, c_code, api_src)
+                        )
+                conn.commit()
+
     if not assigned_numbers:
-        bot.send_message(call.message.chat.id, f"❌ <b>নম্বর আনা সম্ভব হয়নি!</b>\n\nবর্তমানে নম্বর স্টকে নেই।")
+        bot.send_message(call.message.chat.id, f"❌ <b>নম্বর আনা সম্ভব হয়নি!</b>\n\nবর্তমানে DUAL API-তে নম্বর স্টকে নেই।")
         return
 
     num_str_list = "\n".join([f"{c_flag} 📋 <code>{p}</code>" for p in assigned_numbers])
@@ -724,7 +768,7 @@ def buy_number_click(call):
 
     otp_reward_val = float(get_setting('otp_reward') or 0.10)
     text = (
-        f"{c_flag} <b>{c_name}</b> 📘 <b>Number Assigned</b>\n\n"
+        f"{c_flag} <b>{c_name}</b> 📘 <b>Number Assigned (Dual API)</b>\n\n"
         f"💰 <b>Per OTP Reward : {otp_reward_val:.2f} BDT</b>\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"{num_str_list}\n\n"
@@ -749,7 +793,7 @@ def dummy_copy_cb(call):
 
 @bot.message_handler(func=lambda msg: msg.text == "🚥 LIVE TRAFFIC")
 def live_traffic_cmd(message):
-    bot.send_message(message.chat.id, "📊 <b>LIVE TRAFFIC</b>\n━━━━━━━━━━━━━━━━━━\n🌐 <b>SMS Engine:</b> Connected\nOTP Monitoring Running 24/7 Auto Polling...")
+    bot.send_message(message.chat.id, "📊 <b>LIVE TRAFFIC</b>\n━━━━━━━━━━━━━━━━━━\n🌐 <b>SMS Engine:</b> DUAL API Connected (VoltX + Stex)\nOTP Monitoring Running 24/7 Auto Polling...")
 
 # ----------------- 🛍️ WEB SHOP SYSTEM -----------------
 @bot.message_handler(func=lambda msg: msg.text == "🛍️ Web Shop")
@@ -1256,26 +1300,27 @@ def admin_panel_cmd(message):
     text = "📊 <b>MASTER ADMIN CONTROL PANEL</b>\n\nসবকিছু কাস্টমাইজ করতে নিচের অপশনগুলো ব্যবহার করুন:"
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
-        types.InlineKeyboardButton("⚙️ VoltX API Config", callback_data="adm_voltx_config"),
-        types.InlineKeyboardButton("📢 Force Join Channels", callback_data="adm_edit_force_join")
+        types.InlineKeyboardButton("⚙️ VoltX (API 1) Config", callback_data="adm_voltx_config"),
+        types.InlineKeyboardButton("⚙️ StexSMS (API 2) Config", callback_data="adm_stex_config")
     )
     markup.add(
-        types.InlineKeyboardButton("💸 Edit Payment Numbers", callback_data="adm_edit_payments"),
-        types.InlineKeyboardButton("👀 Pending Deposits", callback_data="adm_view_pending_dep")
+        types.InlineKeyboardButton("📢 Force Join Channels", callback_data="adm_edit_force_join"),
+        types.InlineKeyboardButton("💸 Edit Payment Numbers", callback_data="adm_edit_payments")
     )
     markup.add(
-        types.InlineKeyboardButton("📤 Pending Withdrawals", callback_data="adm_view_pending_w"),
-        types.InlineKeyboardButton("🎁 Edit Bonuses & Rewards", callback_data="adm_edit_bonuses")
+        types.InlineKeyboardButton("👀 Pending Deposits", callback_data="adm_view_pending_dep"),
+        types.InlineKeyboardButton("📤 Pending Withdrawals", callback_data="adm_view_pending_w")
     )
     markup.add(
-        types.InlineKeyboardButton("🌐 Add Service/Country", callback_data="adm_add_country"),
-        types.InlineKeyboardButton("🛍️ Add Shop Stock", callback_data="adm_add_shop_stock")
+        types.InlineKeyboardButton("🎁 Edit Bonuses & Rewards", callback_data="adm_edit_bonuses"),
+        types.InlineKeyboardButton("🌐 Add Service/Country", callback_data="adm_add_country")
     )
     markup.add(
-        types.InlineKeyboardButton("👤 Edit User Balance", callback_data="adm_edit_balance"),
-        types.InlineKeyboardButton("📢 Broadcast Message", callback_data="adm_broadcast")
+        types.InlineKeyboardButton("🛍️ Add Shop Stock", callback_data="adm_add_shop_stock"),
+        types.InlineKeyboardButton("👤 Edit User Balance", callback_data="adm_edit_balance")
     )
     markup.add(
+        types.InlineKeyboardButton("📢 Broadcast Message", callback_data="adm_broadcast"),
         types.InlineKeyboardButton("🗑️ Reset & Clear All Stock", callback_data="adm_clear_stock")
     )
     bot.send_message(message.chat.id, text, reply_markup=markup)
@@ -1289,31 +1334,33 @@ def admin_cb_handler(call):
     if data == "adm_voltx_config":
         base_url = get_setting('api_base_url')
         api_key = get_setting('number_api_key')
-        getnum = get_setting('getnum_url')
-        getmsg = get_setting('getmsg_url')
-        traffic = get_setting('traffic_url')
-        
         config_text = (
-            f"👑 <b>Name: VoltX API Engine</b>\n"
-            f"🔥 <b>Status: Running (API) ✅</b>\n\n"
-            f"🌐 <b>1. Base API URL:</b>\n<code>{base_url}</code>\n\n"
-            f"🔐 <b>2. API Key (Token):</b>\n<code>{api_key}</code>\n\n"
-            f"🔢 <b>3. Get Number API:</b>\n<code>{getnum}</code>\n\n"
-            f"💬 <b>4. Get Message API:</b>\n<code>{getmsg}</code>\n\n"
-            f"📊 <b>5. Traffic API:</b>\n<code>{traffic}</code>\n\n"
-            f"✏️ <i>Edit system configuration:</i>"
+            f"👑 <b>API 1 (VoltXSMS Engine) Config</b>\n\n"
+            f"🌐 <b>Base URL:</b> <code>{base_url}</code>\n"
+            f"🔐 <b>API Key :</b> <code>{api_key}</code>\n"
         )
-        markup = types.InlineKeyboardMarkup(row_width=2)
+        markup = types.InlineKeyboardMarkup(row_width=1)
         markup.add(
-            types.InlineKeyboardButton("Edit Base URL", callback_data="set_cfg_api_base_url"),
-            types.InlineKeyboardButton("Edit API Key", callback_data="set_cfg_number_api_key")
+            types.InlineKeyboardButton("Edit API 1 Base URL", callback_data="set_cfg_api_base_url"),
+            types.InlineKeyboardButton("Edit API 1 Key", callback_data="set_cfg_number_api_key"),
+            types.InlineKeyboardButton("‹ Back", callback_data="adm_back_main")
         )
+        bot.edit_message_text(config_text, call.message.chat.id, call.message.message_id, reply_markup=markup)
+
+    elif data == "adm_stex_config":
+        base_url_2 = get_setting('api_base_url_2')
+        api_key_2 = get_setting('number_api_key_2')
+        config_text = (
+            f"👑 <b>API 2 (StexSMS Engine) Config</b>\n\n"
+            f"🌐 <b>Base URL:</b> <code>{base_url_2}</code>\n"
+            f"🔐 <b>API Key :</b> <code>{api_key_2}</code>\n"
+        )
+        markup = types.InlineKeyboardMarkup(row_width=1)
         markup.add(
-            types.InlineKeyboardButton("Edit GetNum URL", callback_data="set_cfg_getnum_url"),
-            types.InlineKeyboardButton("Edit GetMsg URL", callback_data="set_cfg_getmsg_url")
+            types.InlineKeyboardButton("Edit API 2 Base URL", callback_data="set_cfg_api_base_url_2"),
+            types.InlineKeyboardButton("Edit API 2 Key", callback_data="set_cfg_number_api_key_2"),
+            types.InlineKeyboardButton("‹ Back", callback_data="adm_back_main")
         )
-        markup.add(types.InlineKeyboardButton("Edit Traffic URL", callback_data="set_cfg_traffic_url"))
-        markup.add(types.InlineKeyboardButton("‹ Back", callback_data="adm_back_main"))
         bot.edit_message_text(config_text, call.message.chat.id, call.message.message_id, reply_markup=markup)
 
     elif data.startswith("set_cfg_"):
