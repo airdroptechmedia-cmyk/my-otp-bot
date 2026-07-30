@@ -706,7 +706,7 @@ def buy_number_click(call):
         send_force_join_msg(call.message.chat.id)
         return
 
-    bot.answer_callback_query(call.id, "⌛ DUAL API (VoltXSMS + StexSMS) থেকে ৪টি নম্বর আনা হচ্ছে...", show_alert=False)
+    bot.answer_callback_query(call.id, "৪টি নম্বর আনা হচ্ছে...", show_alert=False)
     _, range_id, c_code, service_name = call.data.split("_")
     user_id = call.from_user.id
 
