@@ -397,7 +397,7 @@ def voltx_get_number_from_api(range_id, api_source="API1"):
         return False, f"⚠️ সংযোগ বিচ্ছিন্ন: {e}", None, api_source
 
 def extract_otp_from_response(res, clean_phone, order_id):
-    """Robust OTP Extractor - Handles all 2oo9.cloud response structures and regex extracts digits safely"""
+    """Robust OTP Extractor - Strictly filters out API status strings (e.g. 'ok', '200') and extracts valid numeric/formatted OTP codes"""
     if not res:
         return None
     
@@ -408,21 +408,45 @@ def extract_otp_from_response(res, clean_phone, order_id):
         if not s or not isinstance(s, (str, int)):
             return None
         s_str = str(s).strip()
-        if not s_str or s_str.lower() in ["none", "null", "waiting", "pending", "false"]:
+        if not s_str:
             return None
-        # Check if the string itself is purely 4 to 8 digits
+        
+        # Ignored non-OTP strings and status codes
+        ignored_keywords = [
+            "none", "null", "waiting", "pending", "false", "true", "ok", "success", 
+            "status_ok", "200", "400", "404", "500", "error", "no_sms", "not_found", 
+            "processing", "no_otp", "exist", "number_active", "received", "cancelled",
+            "cancel", "timeout", "expire", "expired", "wait", "done"
+        ]
+        if s_str.lower() in ignored_keywords:
+            return None
+
+        # 1. Pure 4 to 8 digit OTP code
         if s_str.isdigit() and 4 <= len(s_str) <= 8:
             return s_str
-        # Extract 4-8 digit OTP code via regex from raw message text (e.g. "Your code is 123456")
+
+        # 2. Extract 4-8 digit OTP code via regex from raw message text (e.g. "Your OTP is 123456")
         matches = re.findall(r'\b\d{4,8}\b', s_str)
         if matches:
             return matches[0]
-        return s_str if len(s_str) <= 12 else None
+
+        # 3. Prefixed OTPs (e.g., G-123456, FB-123456)
+        prefix_match = re.search(r'\b([A-Za-z]{1,4}[- ]?\d{4,8})\b', s_str)
+        if prefix_match:
+            return prefix_match.group(1)
+
+        # 4. Hyphenated digits (e.g. 123-456)
+        hyphen_match = re.search(r'\b\d{3,4}-\d{3,4}\b', s_str)
+        if hyphen_match:
+            return hyphen_match.group(0).replace('-', '')
+
+        return None
 
     def get_code_from_dict(d):
         if not isinstance(d, dict):
             return None
-        for field in ['otp', 'code', 'last_code', 'sms', 'message', 'text', 'msg']:
+        # Prioritize true OTP fields over general status keys like 'code' or 'message'
+        for field in ['otp', 'sms', 'last_code', 'text', 'message', 'msg', 'code']:
             val = d.get(field)
             extracted = extract_code_from_str(val)
             if extracted:
