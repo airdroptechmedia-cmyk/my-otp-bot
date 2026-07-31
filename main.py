@@ -24,7 +24,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
 
 # ==================== CONFIGURATION ====================
-BOT_TOKEN = "8842802759:AAF1UktFbWNVjBfZDamUPE-U_9UokYNUjBs"
+BOT_TOKEN = "BOT_TOKEN"
 ADMIN_ID = 8125384914
 BOT_NAME = "OTP RECIVER PRO BOT"
 DB_NAME = "system.db"
