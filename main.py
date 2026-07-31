@@ -41,7 +41,7 @@ threading.Thread(target=run_flask, daemon=True).start()
 threading.Thread(target=self_ping, daemon=True).start()
 
 # ==================== CONFIGURATION ====================
-BOT_TOKEN = "8842802759:AAFTzG_yyzHiirBiW2Canl2l0t_sG2HxKt8" # বটের টোকেন
+BOT_TOKEN = "8842802759:AAE04k_Lx1Bq_-pXpr14-4WF8gsOjZJUPR4" # বটের টোকেন
 ADMIN_ID = 8125384914                                       # Admin ID
 BOT_NAME = "OTP RECIVER PRO BOT"
 DB_NAME = "fresh_master_shop.db"
