@@ -1,16 +1,16 @@
 import os
 import sqlite3
-import telebot
 import time
 import requests
 import threading
 import io
 import datetime
 import openpyxl
-import concurrent.futures
+import asyncio
+import aiohttp
 import re
 from flask import Flask
-from telebot import types
+from telebot import TeleBot, types
 from contextlib import contextmanager
 
 # ==================== KEEP-ALIVE & 1-MIN SELF-PING ENGINE ====================
@@ -18,7 +18,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "OTP RECIVER PRO BOT with DUAL API is Alive 24/7!"
+    return "OTP RECIVER PRO BOT with ASYNC DUAL API is Alive 24/7!"
 
 def run_flask():
     try:
@@ -41,15 +41,14 @@ threading.Thread(target=run_flask, daemon=True).start()
 threading.Thread(target=self_ping, daemon=True).start()
 
 # ==================== CONFIGURATION ====================
-BOT_TOKEN = "8842802759:AAE04k_Lx1Bq_-pXpr14-4WF8gsOjZJUPR4" # আপনার বটের টোকেন
-ADMIN_ID = 8125384914                                       # আপনার Admin ID
+BOT_TOKEN = "8842802759:AAFTzG_yyzHiirBiW2Canl2l0t_sG2HxKt8" # বটের টোকেন
+ADMIN_ID = 8125384914                                       # Admin ID
 BOT_NAME = "OTP RECIVER PRO BOT"
 DB_NAME = "fresh_master_shop.db"
 # =======================================================
 
-bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
+bot = TeleBot(BOT_TOKEN, parse_mode="HTML")
 
-# Cache Bot Username for fast performance
 BOT_USERNAME = ""
 try:
     BOT_USERNAME = bot.get_me().username
@@ -70,7 +69,6 @@ def clear_user_state(user_id):
     if user_id in USER_STATES:
         USER_STATES[user_id].clear()
 
-# Context Manager for Safe Database Connections
 @contextmanager
 def get_db():
     conn = sqlite3.connect(DB_NAME, timeout=15)
@@ -83,7 +81,6 @@ def get_db():
 LAST_BACKUP_TIME = 0
 
 def backup_db_to_telegram(force=False):
-    """Safely backs up SQLite DB to Telegram Cloud (Admin Chat)"""
     global LAST_BACKUP_TIME
     now = time.time()
     if not force and (now - LAST_BACKUP_TIME < 10):
@@ -104,7 +101,6 @@ def backup_db_to_telegram(force=False):
         print(f"Backup DB Exception: {e}")
 
 def restore_db_from_telegram():
-    """Restores SQLite DB from latest Telegram Backup on Render Startup"""
     try:
         updates = bot.get_updates(limit=100)
         for update in reversed(updates):
@@ -120,10 +116,8 @@ def restore_db_from_telegram():
         print(f"Restore DB Exception: {e}")
     return False
 
-# Attempt restoring cloud backup BEFORE local db init
 restore_db_from_telegram()
 
-# Helper function to generate Excel File (.xlsx)
 def create_excel_document(product_name, lines):
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -148,7 +142,6 @@ def init_db():
         cursor = conn.cursor()
         cursor.execute("PRAGMA journal_mode=WAL;")
         
-        # Users Table
         cursor.execute('''CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
             balance REAL DEFAULT 0.00,
@@ -163,7 +156,6 @@ def init_db():
         except Exception:
             pass
         
-        # Active API Number Orders Table (With api_source for Dual API)
         cursor.execute('''CREATE TABLE IF NOT EXISTS active_orders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER,
@@ -181,7 +173,6 @@ def init_db():
         except Exception:
             pass
         
-        # Purchases History Table
         cursor.execute('''CREATE TABLE IF NOT EXISTS purchases (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER,
@@ -193,7 +184,6 @@ def init_db():
             date TEXT DEFAULT CURRENT_DATE
         )''')
         
-        # Withdrawals Request Table
         cursor.execute('''CREATE TABLE IF NOT EXISTS withdrawals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER,
@@ -204,7 +194,6 @@ def init_db():
             date TEXT DEFAULT CURRENT_DATE
         )''')
         
-        # Dynamic Countries / Services Table
         cursor.execute('''CREATE TABLE IF NOT EXISTS countries (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             service_name TEXT,
@@ -215,7 +204,6 @@ def init_db():
             price REAL DEFAULT 0.00
         )''')
         
-        # Products Table
         cursor.execute('''CREATE TABLE IF NOT EXISTS products (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             category TEXT,
@@ -224,7 +212,6 @@ def init_db():
             price REAL
         )''')
         
-        # Inventory Stock Table
         cursor.execute('''CREATE TABLE IF NOT EXISTS item_stock (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             product_id INTEGER,
@@ -232,7 +219,6 @@ def init_db():
             status TEXT DEFAULT 'available'
         )''')
         
-        # Deposits Table
         cursor.execute('''CREATE TABLE IF NOT EXISTS deposits (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER,
@@ -242,13 +228,11 @@ def init_db():
             status TEXT DEFAULT 'pending'
         )''')
         
-        # System Settings Table
         cursor.execute('''CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
             value TEXT
         )''')
         
-        # Default Settings (API 1: VoltXSMS & API 2: StexSMS)
         defaults = {
             'bkash_num': '01625212609',
             'nagad_num': '01625212609',
@@ -258,15 +242,13 @@ def init_db():
             'deposit_bonus': '5',
             'refer_reward': '0.11',
             'otp_reward': '0.10',
-            'signup_bonus': '0.00',  # Configurable Joining Bonus
+            'signup_bonus': '0.00',
             
-            # API 1 (VoltX SMS)
             'number_api_key': 'M7D4REK5Y06',
             'api_base_url': 'https://api.2oo9.cloud/MXS47FLFX0U/tnevs/@public/api',
             'getnum_url': 'https://api.2oo9.cloud/MXS47FLFX0U/tnevs/@public/api/getnum',
             'getmsg_url': 'https://api.2oo9.cloud/MXS47FLFX0U/tnevs/@public/api/success-otp',
             
-            # API 2 (Stex SMS)
             'number_api_key_2': 'M6SB7HZXXIX',
             'api_base_url_2': 'https://api.2oo9.cloud/MXS47FLFX0U/tnevs/@public/api',
             'getnum_url_2': 'https://api.2oo9.cloud/MXS47FLFX0U/tnevs/@public/api/getnum',
@@ -280,7 +262,6 @@ def init_db():
         for k, v in defaults.items():
             cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (k, v))
 
-        # Force update latest API Keys if old defaults exist
         cursor.execute("UPDATE settings SET value='M7D4REK5Y06' WHERE key='number_api_key' AND (value='M9NA8XX44CT' OR value='')")
         cursor.execute("UPDATE settings SET value='M6SB7HZXXIX' WHERE key='number_api_key_2' AND value=''")
             
@@ -360,44 +341,8 @@ def check_join_verify_cb(call):
     else:
         bot.answer_callback_query(call.id, "❌ আপনি এখনো সবগুলো চ্যানেলে জয়েন করেননি! আগে জয়েন করুন।", show_alert=True)
 
-# ----------------- DUAL SMS API ENGINE (VoltXSMS + StexSMS) -----------------
-def voltx_get_number_from_api(range_id, api_source="API1"):
-    """Generic function to fetch a number from API1 or API2"""
-    if api_source == "API2":
-        api_key = get_setting('number_api_key_2') or "M6SB7HZXXIX"
-        url = get_setting('getnum_url_2') or "https://api.2oo9.cloud/MXS47FLFX0U/tnevs/@public/api/getnum"
-    else:
-        api_key = get_setting('number_api_key') or "M7D4REK5Y06"
-        url = get_setting('getnum_url') or "https://api.2oo9.cloud/MXS47FLFX0U/tnevs/@public/api/getnum"
-        
-    headers = {
-        "mauthapi": api_key,
-        "Content-Type": "application/json"
-    }
-    payload = {"rid": str(range_id)}
-    
-    try:
-        r = requests.post(url, json=payload, headers=headers, timeout=6)
-        res = r.json()
-        
-        meta = res.get("meta", {})
-        code = meta.get("code")
-        
-        if code == 200 and res.get("data"):
-            data = res["data"]
-            phone_num = data.get("full_number") or data.get("no_plus_number") or data.get("number")
-            order_id = data.get("no_plus_number") or phone_num
-            return True, order_id, phone_num, api_source
-        elif code == 2946 or meta.get("status") == "not_found":
-            return False, "❌ নম্বর স্টকে নেই!", None, api_source
-        else:
-            msg = res.get("message") or meta.get("status") or "API Error"
-            return False, f"⚠️ API Error: {msg}", None, api_source
-    except Exception as e:
-        return False, f"⚠️ সংযোগ বিচ্ছিন্ন: {e}", None, api_source
-
+# ----------------- HIGH-SPEED ASYNCHRONOUS OTP EXTRACTION ENGINE -----------------
 def extract_otp_from_response(res, clean_phone, order_id):
-    """Robust OTP Extractor - Strictly filters out API status strings (e.g. 'ok', '200') and extracts valid numeric/formatted OTP codes"""
     if not res:
         return None
     
@@ -411,7 +356,6 @@ def extract_otp_from_response(res, clean_phone, order_id):
         if not s_str:
             return None
         
-        # Ignored non-OTP strings and status codes
         ignored_keywords = [
             "none", "null", "waiting", "pending", "false", "true", "ok", "success", 
             "status_ok", "200", "400", "404", "500", "error", "no_sms", "not_found", 
@@ -421,21 +365,17 @@ def extract_otp_from_response(res, clean_phone, order_id):
         if s_str.lower() in ignored_keywords:
             return None
 
-        # 1. Pure 4 to 8 digit OTP code
         if s_str.isdigit() and 4 <= len(s_str) <= 8:
             return s_str
 
-        # 2. Extract 4-8 digit OTP code via regex from raw message text (e.g. "Your OTP is 123456")
         matches = re.findall(r'\b\d{4,8}\b', s_str)
         if matches:
             return matches[0]
 
-        # 3. Prefixed OTPs (e.g., G-123456, FB-123456)
         prefix_match = re.search(r'\b([A-Za-z]{1,4}[- ]?\d{4,8})\b', s_str)
         if prefix_match:
             return prefix_match.group(1)
 
-        # 4. Hyphenated digits (e.g. 123-456)
         hyphen_match = re.search(r'\b\d{3,4}-\d{3,4}\b', s_str)
         if hyphen_match:
             return hyphen_match.group(0).replace('-', '')
@@ -445,7 +385,6 @@ def extract_otp_from_response(res, clean_phone, order_id):
     def get_code_from_dict(d):
         if not isinstance(d, dict):
             return None
-        # Prioritize true OTP fields over general status keys like 'code' or 'message'
         for field in ['otp', 'sms', 'last_code', 'text', 'message', 'msg', 'code']:
             val = d.get(field)
             extracted = extract_code_from_str(val)
@@ -504,8 +443,42 @@ def extract_otp_from_response(res, clean_phone, order_id):
 
     return None
 
-def voltx_check_sms(phone_num, order_id, api_source="API1"):
-    """Checks OTP from the correct API source (API1 VoltXSMS or API2 StexSMS)"""
+async def async_voltx_get_number(session, range_id, api_source="API1"):
+    if api_source == "API2":
+        api_key = get_setting('number_api_key_2') or "M6SB7HZXXIX"
+        url = get_setting('getnum_url_2') or "https://api.2oo9.cloud/MXS47FLFX0U/tnevs/@public/api/getnum"
+    else:
+        api_key = get_setting('number_api_key') or "M7D4REK5Y06"
+        url = get_setting('getnum_url') or "https://api.2oo9.cloud/MXS47FLFX0U/tnevs/@public/api/getnum"
+        
+    headers = {
+        "mauthapi": api_key,
+        "Content-Type": "application/json"
+    }
+    payload = {"rid": str(range_id)}
+    
+    try:
+        async with session.post(url, json=payload, headers=headers, timeout=6) as response:
+            if response.status == 200:
+                res = await response.json()
+                meta = res.get("meta", {})
+                code = meta.get("code")
+                
+                if code == 200 and res.get("data"):
+                    data = res["data"]
+                    phone_num = data.get("full_number") or data.get("no_plus_number") or data.get("number")
+                    order_id = data.get("no_plus_number") or phone_num
+                    return True, order_id, phone_num, api_source
+                elif code == 2946 or meta.get("status") == "not_found":
+                    return False, "❌ নম্বর স্টকে নেই!", None, api_source
+                else:
+                    msg = res.get("message") or meta.get("status") or "API Error"
+                    return False, f"⚠️ API Error: {msg}", None, api_source
+            return False, "⚠️ API Server Error", None, api_source
+    except Exception as e:
+        return False, f"⚠️ সংযোগ বিচ্ছিন্ন: {e}", None, api_source
+
+async def async_voltx_check_sms(session, phone_num, order_id, api_source="API1"):
     if api_source == "API2":
         api_key = get_setting('number_api_key_2') or "M6SB7HZXXIX"
         base_url = get_setting('api_base_url_2') or "https://api.2oo9.cloud/MXS47FLFX0U/tnevs/@public/api"
@@ -540,7 +513,6 @@ def voltx_check_sms(phone_num, order_id, api_source="API1"):
             continue
         clean_url = url.split('?')[0]
         
-        # 1. POST payload check
         try:
             payload = {
                 "number": clean_phone,
@@ -548,31 +520,32 @@ def voltx_check_sms(phone_num, order_id, api_source="API1"):
                 "full_number": f"+{clean_phone}",
                 "id": clean_order_id
             }
-            r = requests.post(clean_url, json=payload, headers=headers, timeout=6)
-            if r.status_code == 200:
-                code = extract_otp_from_response(r.json(), clean_phone, clean_order_id)
-                if code:
-                    return "RECEIVED", code
+            async with session.post(clean_url, json=payload, headers=headers, timeout=5) as r:
+                if r.status == 200:
+                    json_res = await r.json()
+                    code = extract_otp_from_response(json_res, clean_phone, clean_order_id)
+                    if code:
+                        return "RECEIVED", code
         except Exception:
             pass
 
-        # 2. GET query params check
         for p_key, p_val in [('number', clean_phone), ('id', clean_order_id), ('phone', clean_phone)]:
             try:
-                r = requests.get(f"{clean_url}?{p_key}={p_val}", headers=headers, timeout=6)
-                if r.status_code == 200:
-                    code = extract_otp_from_response(r.json(), clean_phone, clean_order_id)
-                    if code:
-                        return "RECEIVED", code
+                async with session.get(f"{clean_url}?{p_key}={p_val}", headers=headers, timeout=5) as r:
+                    if r.status == 200:
+                        json_res = await r.json()
+                        code = extract_otp_from_response(json_res, clean_phone, clean_order_id)
+                        if code:
+                            return "RECEIVED", code
             except Exception:
                 pass
 
     return "WAITING", None
 
-# ----------------- 🔄 AUTO OTP POLLING & CLOUD SYNC THREAD -----------------
-def check_single_active_order(order):
+# ----------------- 🔄 HIGH-SPEED ASYNC AUTO OTP POLLING THREAD -----------------
+async def async_check_single_order(session, order):
     db_id, user_id, order_id, phone_num, service_name, c_code, api_source = order
-    status, otp_code = voltx_check_sms(phone_num, order_id, api_source=api_source)
+    status, otp_code = await async_voltx_check_sms(session, phone_num, order_id, api_source=api_source)
 
     if status == "RECEIVED" and otp_code:
         otp_reward_val = float(get_setting('otp_reward') or 0.10)
@@ -593,7 +566,6 @@ def check_single_active_order(order):
 
         backup_db_to_telegram()
 
-        # 1. Send Direct User Notification
         user_text = (
             f"🎉 <b>NEW OTP RECEIVED!</b>\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
@@ -610,7 +582,6 @@ def check_single_active_order(order):
         except Exception:
             pass
 
-        # 2. Automatically Broadcast Live OTP to Group
         otp_group = get_setting('otp_group_id') or "@otpreciverpro"
         group_text = (
             f"🔔 <b>LIVE OTP TRAFFIC!</b>\n"
@@ -632,25 +603,31 @@ def check_single_active_order(order):
             cursor.execute("UPDATE active_orders SET status='CANCELLED' WHERE id=?", (db_id,))
             conn.commit()
 
-def auto_otp_checker_loop():
-    print("🚀 Auto OTP Checker, Reward & Group Broadcaster Started...")
-    while True:
-        try:
-            with get_db() as conn:
-                cursor = conn.cursor()
-                cursor.execute("SELECT id, user_id, order_id, phone_number, service, country, api_source FROM active_orders WHERE status='WAITING'")
-                active_orders = cursor.fetchall()
+async def async_otp_checker_worker():
+    print("🚀 High-Speed Asynchronous OTP Checker Loop Started...")
+    async with aiohttp.ClientSession() as session:
+        while True:
+            try:
+                with get_db() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT id, user_id, order_id, phone_number, service, country, api_source FROM active_orders WHERE status='WAITING'")
+                    active_orders = cursor.fetchall()
 
-            if active_orders:
-                with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-                    executor.map(check_single_active_order, active_orders)
+                if active_orders:
+                    tasks = [async_check_single_order(session, order) for order in active_orders]
+                    await asyncio.gather(*tasks)
 
-        except Exception as e:
-            print(f"Error in OTP Checker Loop: {e}")
+            except Exception as e:
+                print(f"Error in Async OTP Worker: {e}")
 
-        time.sleep(3)
+            await asyncio.sleep(2)
 
-threading.Thread(target=auto_otp_checker_loop, daemon=True).start()
+def start_async_loop():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(async_otp_checker_worker())
+
+threading.Thread(target=start_async_loop, daemon=True).start()
 
 # ----------------- MAIN KEYBOARD -----------------
 def main_reply_keyboard(user_id):
@@ -734,7 +711,6 @@ def user_service_click(call):
         for c in countries:
             c_name, c_flag, c_code, s_code = c
             btn_text = f"{c_flag} {c_name} (Dual API)"
-            # Safe Pipe delimiter so callback query string never crashes on underscores
             markup.add(types.InlineKeyboardButton(btn_text, callback_data=f"buy|{s_code}|{c_code}|{service_name}"))
 
     markup.add(types.InlineKeyboardButton("⬅️ Back To Services", callback_data="back_to_services"))
@@ -754,6 +730,17 @@ def back_to_services_cb(call):
         markup.add(types.InlineKeyboardButton(f"⚙️ {srv_name}", callback_data=f"usr_srv|{srv_name}"))
 
     bot.edit_message_text("⚙️ <b>Select a Service:</b>", call.message.chat.id, call.message.message_id, reply_markup=markup)
+
+async def async_fetch_batch_numbers(range_id):
+    async with aiohttp.ClientSession() as session:
+        tasks = [
+            async_voltx_get_number(session, range_id, "API1"),
+            async_voltx_get_number(session, range_id, "API1"),
+            async_voltx_get_number(session, range_id, "API2"),
+            async_voltx_get_number(session, range_id, "API2")
+        ]
+        results = await asyncio.gather(*tasks)
+        return results
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("buy|"))
 def buy_number_click(call):
@@ -778,16 +765,10 @@ def buy_number_click(call):
         c_name = c_row[0] if c_row else "Uzbekistan"
         c_flag = c_row[1] if c_row else "🇺🇿"
 
-    # DUAL API FAST FETCHING: Concurrent requests from API 1 and API 2
-    results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
-        futures = [
-            executor.submit(voltx_get_number_from_api, range_id, "API1"),
-            executor.submit(voltx_get_number_from_api, range_id, "API1"),
-            executor.submit(voltx_get_number_from_api, range_id, "API2"),
-            executor.submit(voltx_get_number_from_api, range_id, "API2")
-        ]
-        results = [f.result() for f in concurrent.futures.as_completed(futures)]
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    results = loop.run_until_complete(async_fetch_batch_numbers(range_id))
+    loop.close()
 
     assigned_numbers = []
     with get_db() as conn:
@@ -801,28 +782,9 @@ def buy_number_click(call):
                 )
         conn.commit()
 
-    # Fast Fallback: If numbers are less than 4, fill remaining from available API
-    if len(assigned_numbers) < 4:
-        needed = 4 - len(assigned_numbers)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=needed) as executor:
-            fallback_futures = [executor.submit(voltx_get_number_from_api, range_id, "API1") for _ in range(needed)]
-            fallback_results = [f.result() for f in concurrent.futures.as_completed(fallback_futures)]
-            
-            with get_db() as conn:
-                cursor = conn.cursor()
-                for success, order_id_or_err, phone_num, api_src in fallback_results:
-                    if success and phone_num and phone_num not in assigned_numbers:
-                        assigned_numbers.append(phone_num)
-                        cursor.execute(
-                            "INSERT INTO active_orders (user_id, order_id, phone_number, service, country, api_source) VALUES (?, ?, ?, ?, ?, ?)",
-                            (user_id, order_id_or_err, phone_num, service_name, c_code, api_src)
-                        )
-                conn.commit()
-
     otp_group_link = get_setting('otp_group_link') or 'https://t.me/otpreciverpro'
     otp_reward_val = float(get_setting('otp_reward') or 0.10)
 
-    # Always attach interactive action buttons even if stock is temporarily empty
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(types.InlineKeyboardButton("👀 OTP GROUP ↗️", url=otp_group_link))
     markup.add(
@@ -863,7 +825,7 @@ def dummy_copy_cb(call):
 
 @bot.message_handler(func=lambda msg: msg.text == "🚥 LIVE TRAFFIC")
 def live_traffic_cmd(message):
-    bot.send_message(message.chat.id, "📊 <b>LIVE TRAFFIC</b>\n━━━━━━━━━━━━━━━━━━\n🌐 <b>SMS Engine:</b> DUAL API Connected (VoltX + Stex)\nOTP Monitoring Running 24/7 Auto Polling...")
+    bot.send_message(message.chat.id, "📊 <b>LIVE TRAFFIC</b>\n━━━━━━━━━━━━━━━━━━\n🌐 <b>SMS Engine:</b> Async DUAL API Connected (VoltX + Stex)\nOTP Monitoring Running 24/7 Auto Polling...")
 
 # ----------------- 🛍️ WEB SHOP SYSTEM -----------------
 @bot.message_handler(func=lambda msg: msg.text == "🛍️ Web Shop")
@@ -1663,7 +1625,6 @@ def global_message_handler(message):
     user_id = message.from_user.id
     txt = message.text.strip() if message.text else ""
     
-    # Admin State Steps
     if user_id == ADMIN_ID:
         adm_step = get_user_state(user_id, "adm_step")
         if adm_step:
@@ -1825,7 +1786,6 @@ def global_message_handler(message):
                 bot.send_message(message.chat.id, f"✅ ব্রডকাস্ট সম্পন্ন!\n\nসফল: {s} জন\nব্যর্থ: {f} জন")
                 return
 
-    # User State Steps
     usr_step = get_user_state(user_id, "step")
     if usr_step == "await_w_acc":
         acc_num = txt
