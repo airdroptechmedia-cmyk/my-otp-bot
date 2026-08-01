@@ -9,6 +9,7 @@ import openpyxl
 import asyncio
 import aiohttp
 import re
+import subprocess
 from flask import Flask
 from telebot import TeleBot, types
 from contextlib import contextmanager
@@ -28,7 +29,7 @@ def run_flask():
 
 def self_ping():
     time.sleep(10)
-    url = "https://my-otp-bot-d7jk.onrender.com"  # আপনার Render ওয়েবসাইট লিংক
+    url = "https://my-otp-bot-d7jk.onrender.com"  # Render Website Link
     while True:
         try:
             requests.get(url, timeout=10)
@@ -41,7 +42,7 @@ threading.Thread(target=run_flask, daemon=True).start()
 threading.Thread(target=self_ping, daemon=True).start()
 
 # ==================== CONFIGURATION ====================
-BOT_TOKEN = "8842802759:AAF1UktFbWNVjBfZDamUPE-U_9UokYNUjBs" # বটের টোকেন
+BOT_TOKEN = "8842802759:AAF1UktFbWNVjBfZDamUPE-U_9UokYNUjBs" # Bot Token
 ADMIN_ID = 8125384914                                       # Admin ID
 BOT_NAME = "OTP RECIVER PRO BOT"
 DB_NAME = "fresh_master_shop.db"
@@ -341,108 +342,7 @@ def check_join_verify_cb(call):
     else:
         bot.answer_callback_query(call.id, "❌ আপনি এখনো সবগুলো চ্যানেলে জয়েন করেননি! আগে জয়েন করুন।", show_alert=True)
 
-# ----------------- HIGH-SPEED ASYNCHRONOUS OTP EXTRACTION ENGINE -----------------
-def extract_otp_from_response(res, clean_phone, order_id):
-    if not res:
-        return None
-    
-    clean_phone = str(clean_phone).replace("+", "").strip() if clean_phone else ""
-    str_order_id = str(order_id).replace("+", "").strip() if order_id else ""
-    
-    def extract_code_from_str(s):
-        if not s or not isinstance(s, (str, int)):
-            return None
-        s_str = str(s).strip()
-        if not s_str:
-            return None
-        
-        ignored_keywords = [
-            "none", "null", "waiting", "pending", "false", "true", "ok", "success", 
-            "status_ok", "200", "400", "404", "500", "error", "no_sms", "not_found", 
-            "processing", "no_otp", "exist", "number_active", "received", "cancelled",
-            "cancel", "timeout", "expire", "expired", "wait", "done"
-        ]
-        if s_str.lower() in ignored_keywords:
-            return None
-
-        if s_str.isdigit() and 4 <= len(s_str) <= 8:
-            return s_str
-
-        matches = re.findall(r'\b\d{4,8}\b', s_str)
-        if matches:
-            return matches[0]
-
-        prefix_match = re.search(r'\b([A-Za-z]{1,4}[- ]?\d{4,8})\b', s_str)
-        if prefix_match:
-            return prefix_match.group(1)
-
-        hyphen_match = re.search(r'\b\d{3,4}-\d{3,4}\b', s_str)
-        if hyphen_match:
-            return hyphen_match.group(0).replace('-', '')
-
-        return None
-
-    def get_code_from_dict(d):
-        if not isinstance(d, dict):
-            return None
-        for field in ['otp', 'sms', 'last_code', 'text', 'message', 'msg', 'code']:
-            val = d.get(field)
-            extracted = extract_code_from_str(val)
-            if extracted:
-                return extracted
-        return None
-
-    def matches_target(d):
-        if not isinstance(d, dict):
-            return True
-        possible_nums = []
-        for k in ['full_number', 'number', 'phone', 'no_plus_number', 'order_id', 'id']:
-            v = d.get(k)
-            if v is not None:
-                possible_nums.append(str(v).replace("+", "").strip())
-        if not possible_nums:
-            return True
-        for num in possible_nums:
-            if clean_phone and (clean_phone in num or num in clean_phone):
-                return True
-            if str_order_id and (str_order_id in num or num in str_order_id):
-                return True
-        return False
-
-    if isinstance(res, (str, int)):
-        return extract_code_from_str(res)
-
-    if isinstance(res, dict):
-        for key in ["data", "result", "messages", "orders", "sms"]:
-            val = res.get(key)
-            if val is not None:
-                if isinstance(val, list):
-                    for item in val:
-                        if isinstance(item, dict) and matches_target(item):
-                            c = get_code_from_dict(item)
-                            if c:
-                                return c
-                        elif isinstance(item, (str, int)):
-                            c = extract_code_from_str(item)
-                            if c:
-                                return c
-                elif isinstance(val, dict):
-                    if matches_target(val):
-                        c = get_code_from_dict(val)
-                        if c:
-                            return c
-                elif isinstance(val, (str, int)):
-                    c = extract_code_from_str(val)
-                    if c:
-                        return c
-
-        if matches_target(res):
-            c = get_code_from_dict(res)
-            if c:
-                return c
-
-    return None
-
+# ----------------- ASYNCHRONOUS NUMBER REQUEST ENGINE -----------------
 async def async_voltx_get_number(session, range_id, api_source="API1"):
     if api_source == "API2":
         api_key = get_setting('number_api_key_2') or "M6SB7HZXXIX"
@@ -478,156 +378,16 @@ async def async_voltx_get_number(session, range_id, api_source="API1"):
     except Exception as e:
         return False, f"⚠️ সংযোগ বিচ্ছিন্ন: {e}", None, api_source
 
-async def async_voltx_check_sms(session, phone_num, order_id, api_source="API1"):
-    if api_source == "API2":
-        api_key = get_setting('number_api_key_2') or "M6SB7HZXXIX"
-        base_url = get_setting('api_base_url_2') or "https://api.2oo9.cloud/MXS47FLFX0U/tnevs/@public/api"
-        getmsg_setting = get_setting('getmsg_url_2')
-    else:
-        api_key = get_setting('number_api_key') or "M7D4REK5Y06"
-        base_url = get_setting('api_base_url') or "https://api.2oo9.cloud/MXS47FLFX0U/tnevs/@public/api"
-        getmsg_setting = get_setting('getmsg_url')
-    
-    headers = {
-        "mauthapi": api_key,
-        "Content-Type": "application/json"
-    }
-    
-    clean_phone = str(phone_num).replace("+", "").strip()
-    clean_order_id = str(order_id).replace("+", "").strip() if order_id else clean_phone
-    
-    endpoints = []
-    if getmsg_setting and getmsg_setting.strip():
-        endpoints.append(getmsg_setting.strip())
-    
-    default_endpoints = [
-        f"{base_url.rstrip('/')}/success-otp",
-        f"{base_url.rstrip('/')}/getmsg"
-    ]
-    for ep in default_endpoints:
-        if ep not in endpoints:
-            endpoints.append(ep)
-            
-    for url in endpoints:
-        if not url:
-            continue
-        clean_url = url.split('?')[0]
-        
-        try:
-            payload = {
-                "number": clean_phone,
-                "no_plus_number": clean_phone,
-                "full_number": f"+{clean_phone}",
-                "id": clean_order_id
-            }
-            async with session.post(clean_url, json=payload, headers=headers, timeout=5) as r:
-                if r.status == 200:
-                    json_res = await r.json()
-                    code = extract_otp_from_response(json_res, clean_phone, clean_order_id)
-                    if code:
-                        return "RECEIVED", code
-        except Exception:
-            pass
-
-        for p_key, p_val in [('number', clean_phone), ('id', clean_order_id), ('phone', clean_phone)]:
-            try:
-                async with session.get(f"{clean_url}?{p_key}={p_val}", headers=headers, timeout=5) as r:
-                    if r.status == 200:
-                        json_res = await r.json()
-                        code = extract_otp_from_response(json_res, clean_phone, clean_order_id)
-                        if code:
-                            return "RECEIVED", code
-            except Exception:
-                pass
-
-    return "WAITING", None
-
-# ----------------- 🔄 HIGH-SPEED ASYNC AUTO OTP POLLING THREAD -----------------
-async def async_check_single_order(session, order):
-    db_id, user_id, order_id, phone_num, service_name, c_code, api_source = order
-    status, otp_code = await async_voltx_check_sms(session, phone_num, order_id, api_source=api_source)
-
-    if status == "RECEIVED" and otp_code:
-        otp_reward_val = float(get_setting('otp_reward') or 0.10)
-        
-        with get_db() as conn:
-            cursor = conn.cursor()
-            cursor.execute("UPDATE active_orders SET status='COMPLETED', last_code=? WHERE id=?", (otp_code, db_id))
-            cursor.execute("UPDATE users SET balance = balance + ?, reward_balance = reward_balance + ?, otp_count = otp_count + 1 WHERE user_id=?", (otp_reward_val, otp_reward_val, user_id))
-            cursor.execute("SELECT balance, reward_balance FROM users WHERE user_id=?", (user_id,))
-            row_user = cursor.fetchone()
-            new_bal = row_user[0] if row_user else 0.0
-            new_rew_bal = row_user[1] if row_user and len(row_user) > 1 else 0.0
-            
-            cursor.execute("SELECT country_flag FROM countries WHERE service_name=? AND country_code=? LIMIT 1", (service_name, c_code))
-            flag_row = cursor.fetchone()
-            c_flag = flag_row[0] if flag_row else "🇺🇿"
-            conn.commit()
-
-        backup_db_to_telegram()
-
-        user_text = (
-            f"🎉 <b>NEW OTP RECEIVED!</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━\n"
-            f"{c_flag} <b>Number:</b> <code>{phone_num}</code>\n"
-            f"📘 <b>OTP Code:</b> <code>{otp_code}</code>\n"
-            f"━━━━━━━━━━━━━━━━━━━\n"
-            f"🎁 <b>OTP Reward Credited: +{otp_reward_val:.2f} BDT</b>\n"
-            f"💰 <b>Reward Balance: {new_rew_bal:.2f} BDT</b>\n"
-            f"💼 <b>Total Balance: {new_bal:.2f} BDT</b>\n\n"
-            f"👉 <i>(কোডের ওপর টাচ করলেই অটোমেটিক কপি হয়ে যাবে!)</i>"
-        )
-        try:
-            bot.send_message(user_id, user_text)
-        except Exception:
-            pass
-
-        otp_group = get_setting('otp_group_id') or "@otpreciverpro"
-        group_text = (
-            f"🔔 <b>LIVE OTP TRAFFIC!</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━\n"
-            f"⚙️ <b>Service:</b> {service_name}\n"
-            f"{c_flag} <b>Number:</b> <code>{phone_num}</code>\n"
-            f"🔑 <b>OTP Code:</b> <code>{otp_code}</code>\n"
-            f"━━━━━━━━━━━━━━━━━━━\n"
-            f"🤖 <b>Bot:</b> @{BOT_USERNAME}"
-        )
-        try:
-            bot.send_message(otp_group, group_text)
-        except Exception as e:
-            print(f"Group broadcast error: {e}")
-
-    elif status == "CANCELLED":
-        with get_db() as conn:
-            cursor = conn.cursor()
-            cursor.execute("UPDATE active_orders SET status='CANCELLED' WHERE id=?", (db_id,))
-            conn.commit()
-
-async def async_otp_checker_worker():
-    print("🚀 High-Speed Asynchronous OTP Checker Loop Started...")
+async def async_fetch_batch_numbers(range_id):
     async with aiohttp.ClientSession() as session:
-        while True:
-            try:
-                with get_db() as conn:
-                    cursor = conn.cursor()
-                    cursor.execute("SELECT id, user_id, order_id, phone_number, service, country, api_source FROM active_orders WHERE status='WAITING'")
-                    active_orders = cursor.fetchall()
-
-                if active_orders:
-                    tasks = [async_check_single_order(session, order) for order in active_orders]
-                    await asyncio.gather(*tasks)
-
-            except Exception as e:
-                print(f"Error in Async OTP Worker: {e}")
-
-            await asyncio.sleep(2)
-
-def start_async_loop():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(async_otp_checker_worker())
-
-threading.Thread(target=start_async_loop, daemon=True).start()
+        tasks = [
+            async_voltx_get_number(session, range_id, "API1"),
+            async_voltx_get_number(session, range_id, "API1"),
+            async_voltx_get_number(session, range_id, "API2"),
+            async_voltx_get_number(session, range_id, "API2")
+        ]
+        results = await asyncio.gather(*tasks)
+        return results
 
 # ----------------- MAIN KEYBOARD -----------------
 def main_reply_keyboard(user_id):
@@ -731,17 +491,6 @@ def back_to_services_cb(call):
 
     bot.edit_message_text("⚙️ <b>Select a Service:</b>", call.message.chat.id, call.message.message_id, reply_markup=markup)
 
-async def async_fetch_batch_numbers(range_id):
-    async with aiohttp.ClientSession() as session:
-        tasks = [
-            async_voltx_get_number(session, range_id, "API1"),
-            async_voltx_get_number(session, range_id, "API1"),
-            async_voltx_get_number(session, range_id, "API2"),
-            async_voltx_get_number(session, range_id, "API2")
-        ]
-        results = await asyncio.gather(*tasks)
-        return results
-
 @bot.callback_query_handler(func=lambda call: call.data.startswith("buy|"))
 def buy_number_click(call):
     if not is_user_joined(call.from_user.id):
@@ -811,7 +560,7 @@ def buy_number_click(call):
         f"💰 <b>Per OTP Reward : {otp_reward_val:.2f} BDT</b>\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"{num_str_list}\n\n"
-        f"⏳ <i>Waiting for OTP... (অটোমেটিক চেক হচ্ছে)</i>"
+        f"⏳ <i>Waiting for OTP... (Background Scraper Monitoring 24/7)</i>"
     )
 
     try:
@@ -1963,11 +1712,15 @@ def global_message_handler(message):
             bot.send_message(message.chat.id, "❌ এই TrxID টি আগেই ব্যবহার করা হয়েছে!")
         return
 
-# ----------------- 🔄 24/7 AUTO-RECONNECT ENGINE -----------------
-print(f"🤖 {BOT_NAME} Started Successfully & Running 24/7...")
-while True:
-    try:
-        bot.infinity_polling(timeout=20, long_polling_timeout=10)
-    except Exception as e:
-        print(f"⚠️ Connection dropped: {e}. Reconnecting in 5 seconds...")
-        time.sleep(5)
+# ----------------- 🔄 24/7 AUTO-RECONNECT ENGINE & SCRAPER LAUNCHER -----------------
+if __name__ == "__main__":
+    import subprocess
+    # Launch background scraper automatically on startup
+    subprocess.Popen(['python', 'scraper.py'])
+    print(f"🤖 {BOT_NAME} Started Successfully & Running 24/7...")
+    while True:
+        try:
+            bot.infinity_polling(timeout=20, long_polling_timeout=10)
+        except Exception as e:
+            print(f"⚠️ Connection dropped: {e}. Reconnecting in 5 seconds...")
+            time.sleep(5)
