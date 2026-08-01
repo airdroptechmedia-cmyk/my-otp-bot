@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from telebot import TeleBot
 
 # ==================== CONFIGURATION ====================
-BOT_TOKEN = "8842802759:AAFTzG_yyzHiirBiW2Canl2l0t_sG2HxKt8" # Bot Token
+BOT_TOKEN = "8842802759:AAF1UktFbWNVjBfZDamUPE-U_9UokYNUjBs" # Bot Token
 ADMIN_ID = 8125384914                                       # Admin ID
 BOT_NAME = "OTP RECIVER PRO BOT Scraper Engine"
 DB_NAME = "fresh_master_shop.db"
